@@ -22,25 +22,9 @@ REM 依存関係インストール確認
 echo Checking dependencies...
 pip install -r requirements.txt -q
 
-REM PyInstallerでビルド
+REM PyInstallerでビルド (specファイル使用でmagikaモデル含む)
 echo Building EXE...
-pyinstaller --onefile ^
-    --windowed ^
-    --name "PDF2MD" ^
-    --icon "icon.ico" ^
-    --add-data "README.md;." ^
-    --clean ^
-    pdf2md.py
-
-REM アイコンがない場合のフォールバック
-if not exist icon.ico (
-    echo Note: icon.ico not found, building without custom icon...
-    pyinstaller --onefile ^
-        --windowed ^
-        --name "PDF2MD" ^
-        --clean ^
-        pdf2md.py
-)
+pyinstaller --clean PDF2MD.spec
 
 echo.
 echo ================================

@@ -37,14 +37,14 @@ Microsoft [MarkItDown](https://github.com/microsoft/markitdown) を使用して�
 
 ### 方法1: EXEファイルを使用（推奨）
 
-1. [Releases](https://github.com/yourusername/PDF2MD/releases) から最新の `PDF2MD.exe` をダウンロード
+1. [Releases](https://github.com/atsushisuemitsu/PDF2MD/releases) から最新の `PDF2MD.exe` をダウンロード
 2. ダウンロードしたEXEを実行
 
 ### 方法2: Pythonから実行
 
 ```bash
 # リポジトリをクローン
-git clone https://github.com/yourusername/PDF2MD.git
+git clone https://github.com/atsushisuemitsu/PDF2MD.git
 cd PDF2MD
 
 # 依存関係をインストール
@@ -121,6 +121,10 @@ Microsoft MarkItDownは以下の変換を高精度で行います：
 MIT License
 
 ## 更新履歴
+
+### v1.0.1 (2025-01-07)
+- EXE化時のmagikaモデルファイル問題を修正
+- PyInstaller specファイルを追加
 
 ### v1.0.0 (2025-01-07)
 - 初回リリース

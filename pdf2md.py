@@ -35,7 +35,13 @@ class PDF2MDConverter:
     """PDF to Markdown変換クラス"""
 
     def __init__(self):
-        self.md = MarkItDown()
+        # enable_plugins=Falseでmagikaなどの追加機能を無効化
+        # これによりEXE化時のモデルファイル問題を回避
+        try:
+            self.md = MarkItDown(enable_plugins=False)
+        except TypeError:
+            # 古いバージョンのmarkitdownの場合
+            self.md = MarkItDown()
 
     def convert_file(self, pdf_path: str, output_path: str = None) -> tuple[bool, str]:
         """

@@ -9,8 +9,8 @@ dist/
 *.egg-info/
 *.egg
 
-# PyInstaller
-*.spec
+# PyInstaller (keep PDF2MD.spec)
+!PDF2MD.spec
 
 # Virtual environment
 venv/
