@@ -88,6 +88,18 @@ class ImageBlock:
     image_path: str = ""
 
 
+@dataclass
+class TableBlock:
+    """表ブロック（位置情報付き）"""
+    cells: List[List[str]]  # 2D array of cell contents
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    page_num: int
+    header_rows: int = 1  # Number of header rows
+
+
 class AdvancedPDFConverter:
     """高度なPDF to Markdown変換クラス"""
 
@@ -150,8 +162,12 @@ class AdvancedPDFConverter:
             for page_num in range(len(doc)):
                 page = doc[page_num]
 
-                # テキストブロック抽出
-                text_blocks = self._extract_text_blocks(page, page_num)
+                # 表ブロック抽出（テキストより先に抽出して重複を避ける）
+                table_blocks, table_regions = self._extract_table_blocks(page, page_num)
+                all_blocks.extend(table_blocks)
+
+                # テキストブロック抽出（表領域を除外）
+                text_blocks = self._extract_text_blocks(page, page_num, table_regions)
                 all_blocks.extend(text_blocks)
 
                 # 画像ブロック抽出
@@ -178,9 +194,87 @@ class AdvancedPDFConverter:
         except Exception as e:
             return False, str(e)
 
-    def _extract_text_blocks(self, page, page_num: int) -> List[TextBlock]:
+    def _extract_table_blocks(self, page, page_num: int) -> Tuple[List[TableBlock], List[Tuple]]:
+        """ページから表ブロックを抽出"""
+        blocks = []
+        table_regions = []  # 表の領域（テキスト抽出時に除外するため）
+
+        try:
+            # PyMuPDFの表検出機能を使用
+            tables = page.find_tables()
+
+            for table in tables:
+                try:
+                    # 表データを取得
+                    cells = table.extract()
+                    if not cells or len(cells) == 0:
+                        continue
+
+                    # 表の境界ボックス
+                    bbox = table.bbox
+                    x0, y0, x1, y1 = bbox
+
+                    # 表領域を記録
+                    table_regions.append((x0, y0, x1, y1))
+
+                    # セル内容のクリーンアップ
+                    cleaned_cells = []
+                    for row in cells:
+                        cleaned_row = []
+                        for cell in row:
+                            if cell is None:
+                                cleaned_row.append("")
+                            else:
+                                # 改行をスペースに置換してクリーンアップ
+                                cell_text = str(cell).replace('\n', ' ').strip()
+                                cleaned_row.append(cell_text)
+                        cleaned_cells.append(cleaned_row)
+
+                    if cleaned_cells:
+                        blocks.append(TableBlock(
+                            cells=cleaned_cells,
+                            x0=x0,
+                            y0=y0,
+                            x1=x1,
+                            y1=y1,
+                            page_num=page_num,
+                            header_rows=1
+                        ))
+
+                except Exception as e:
+                    print(f"Warning: Failed to extract table: {e}")
+                    continue
+
+        except Exception as e:
+            print(f"Warning: Table detection failed on page {page_num + 1}: {e}")
+
+        return blocks, table_regions
+
+    def _is_in_table_region(self, bbox: Tuple, table_regions: List[Tuple]) -> bool:
+        """テキストブロックが表領域内にあるかチェック"""
+        x0, y0, x1, y1 = bbox
+        center_x = (x0 + x1) / 2
+        center_y = (y0 + y1) / 2
+
+        for tx0, ty0, tx1, ty1 in table_regions:
+            # 中心点が表領域内にあるか、または大部分が重なっているか
+            if tx0 <= center_x <= tx1 and ty0 <= center_y <= ty1:
+                return True
+            # 重複面積の計算
+            overlap_x = max(0, min(x1, tx1) - max(x0, tx0))
+            overlap_y = max(0, min(y1, ty1) - max(y0, ty0))
+            overlap_area = overlap_x * overlap_y
+            block_area = (x1 - x0) * (y1 - y0)
+            if block_area > 0 and overlap_area / block_area > 0.5:
+                return True
+
+        return False
+
+    def _extract_text_blocks(self, page, page_num: int,
+                             table_regions: List[Tuple] = None) -> List[TextBlock]:
         """ページからテキストブロックを抽出"""
         blocks = []
+        table_regions = table_regions or []
 
         # テキストを辞書形式で取得（位置情報付き）
         text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
@@ -206,6 +300,10 @@ class AdvancedPDFConverter:
                 block_text = block_text.strip()
                 if block_text:
                     bbox = block.get("bbox", [0, 0, 0, 0])
+
+                    # 表領域内のテキストはスキップ
+                    if table_regions and self._is_in_table_region(bbox, table_regions):
+                        continue
 
                     # ブロックタイプの推定
                     block_type = self._detect_block_type(block_text, max_font_size, is_bold)
@@ -343,6 +441,9 @@ class AdvancedPDFConverter:
             elif isinstance(block, ImageBlock):
                 md_lines.append(self._format_image_block(block))
 
+            elif isinstance(block, TableBlock):
+                md_lines.append(self._format_table_block(block))
+
         return "\n".join(md_lines)
 
     def _format_text_block(self, block: TextBlock) -> str:
@@ -385,6 +486,33 @@ class AdvancedPDFConverter:
                 md += "\n```\n\n</details>\n"
 
         return md
+
+    def _format_table_block(self, block: TableBlock) -> str:
+        """表ブロックをMarkdown形式に変換"""
+        if not block.cells or len(block.cells) == 0:
+            return ""
+
+        md_lines = ["\n"]
+
+        # 列数を取得（最大列数）
+        max_cols = max(len(row) for row in block.cells)
+
+        for row_idx, row in enumerate(block.cells):
+            # 行の各セルを整形（列数を揃える）
+            cells = row + [""] * (max_cols - len(row))
+
+            # パイプで区切ってMarkdownの表形式に
+            # セル内の|をエスケープ
+            escaped_cells = [cell.replace("|", "\\|") for cell in cells]
+            md_lines.append("| " + " | ".join(escaped_cells) + " |")
+
+            # ヘッダー行の後にセパレータを追加
+            if row_idx == block.header_rows - 1:
+                separator = "| " + " | ".join(["---"] * max_cols) + " |"
+                md_lines.append(separator)
+
+        md_lines.append("")
+        return "\n".join(md_lines)
 
 
 class PDF2MDGUI:
