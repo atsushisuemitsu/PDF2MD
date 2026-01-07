@@ -2,14 +2,17 @@
 
 PDFファイルをMarkdown形式に変換するWindowsデスクトップアプリケーションです。
 
-Microsoft [MarkItDown](https://github.com/microsoft/markitdown) を使用して、高精度なPDF→Markdown変換を実現します。
+**PyMuPDF** と **EasyOCR** を使用して、テキストと画像を正確に抽出し、位置関係を保持したMarkdown変換を実現します。
 
-## 機能
+## 主な機能
 
+- **テキスト抽出**: PDFからテキストを位置情報付きで抽出
+- **画像抽出**: PDF内の図・画像を自動的に抽出して保存
+- **OCR対応**: 図内のテキストをOCRで認識（日本語・英語対応）
+- **位置保持**: テキストと画像の位置関係を正確にMarkdownに反映
 - **GUI対応**: 直感的なグラフィカルインターフェース
 - **ドラッグ&ドロップ**: PDFファイルをウィンドウにドロップして追加
 - **バッチ処理**: 複数ファイルの一括変換
-- **出力先選択**: 同じフォルダまたは指定フォルダに出力
 - **CLIモード**: コマンドラインからも使用可能
 
 ## スクリーンショット
@@ -20,16 +23,18 @@ Microsoft [MarkItDown](https://github.com/microsoft/markitdown) を使用して�
 +------------------------------------------+
 | [ファイル追加] [フォルダ追加] [クリア] [変換実行] |
 +------------------------------------------+
+|   [x] 画像を抽出   [x] OCR（図内テキスト認識） |
++------------------------------------------+
 | ファイルパス                    | 状態    |
 |--------------------------------|---------|
 | C:\docs\sample.pdf             | 待機中   |
-| C:\docs\report.pdf             | 完了     |
+| C:\docs\manual.pdf             | 完了     |
 +------------------------------------------+
 | ○ 同じフォルダに出力                      |
 | ○ 指定フォルダに出力: [          ] [参照] |
 +------------------------------------------+
 | [================    ] 60%               |
-| 変換中: report.pdf                        |
+| 変換中: manual.pdf                        |
 +------------------------------------------+
 ```
 
@@ -61,13 +66,16 @@ python pdf2md.py
 1. `PDF2MD.exe` をダブルクリックして起動
 2. 「ファイル追加」または「フォルダ追加」でPDFを選択
    - またはPDFファイルをウィンドウにドラッグ&ドロップ
-3. 必要に応じて出力先を設定
-4. 「変換実行」をクリック
+3. オプションを設定:
+   - **画像を抽出**: チェックするとPDF内の画像を別ファイルとして保存
+   - **OCR**: チェックすると画像内のテキストをOCRで認識してMarkdownに含める
+4. 必要に応じて出力先を設定
+5. 「変換実行」をクリック
 
 ### CLIモード
 
 ```bash
-# 単一ファイル変換
+# 単一ファイル変換（画像抽出あり）
 python pdf2md.py document.pdf
 
 # 複数ファイル変換
@@ -75,6 +83,43 @@ python pdf2md.py file1.pdf file2.pdf file3.pdf
 
 # フォルダ内の全PDFを変換
 python pdf2md.py ./pdf_folder/
+
+# OCRを有効にして変換
+python pdf2md.py --ocr document.pdf
+
+# 画像抽出を無効にして変換
+python pdf2md.py --no-images document.pdf
+```
+
+## 出力例
+
+変換すると以下のファイルが生成されます：
+
+```
+input_folder/
+├── manual.pdf          # 元のPDF
+
+output_folder/
+├── manual.md           # 変換されたMarkdown
+└── manual_images/      # 抽出された画像
+    ├── page1_img1.png
+    ├── page1_img2.png
+    └── page2_img1.png
+```
+
+### Markdownの出力形式
+
+```markdown
+# タイトル
+
+テキストの内容がここに出力されます。
+
+![図1](manual_images/page1_img1.png)
+
+**図内テキスト (OCR):**
+図から認識されたテキストがここに表示されます。
+
+続きのテキスト内容...
 ```
 
 ## EXEのビルド方法
@@ -94,33 +139,45 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 ## 技術仕様
 
 - **Python**: 3.9+
-- **変換エンジン**: Microsoft MarkItDown
+- **PDF解析**: PyMuPDF (fitz)
+- **OCR**: EasyOCR（日本語・英語対応）
+- **画像処理**: Pillow
 - **GUI**: tkinter
 - **D&D対応**: tkinterdnd2（オプション）
 - **EXE化**: PyInstaller
 
-## 変換精度
+## 変換の仕組み
 
-Microsoft MarkItDownは以下の変換を高精度で行います：
+1. **PDF解析**: PyMuPDFでPDFを開き、各ページのテキストブロックと画像を抽出
+2. **位置情報取得**: 各要素のバウンディングボックス（x0, y0, x1, y1）を取得
+3. **画像保存**: 画像をPNGファイルとして保存
+4. **OCR処理**: EasyOCRで画像内のテキストを認識
+5. **Markdown生成**: 位置情報に基づいて上から下、左から右の順序でMarkdownを構築
 
-- テキストの抽出と構造化
-- 見出し階層の認識
-- リスト構造の保持
-- テーブルの変換
-- 画像参照の保持
+## 注意事項
 
-技術文書で90%以上の精度を達成（参考記事による）。
+- OCR機能を使用する場合、初回実行時にモデルファイル（約100MB）がダウンロードされます
+- 大きな画像を含むPDFの場合、処理に時間がかかることがあります
+- 複雑なレイアウトのPDFでは、位置関係が正確に再現されない場合があります
 
 ## 参考
 
 - [PDFを高品質マークダウンに変換](https://note.com/suh_sunaneko/n/na6687b2e01c8)
-- [Microsoft MarkItDown](https://github.com/microsoft/markitdown)
+- [PyMuPDF Documentation](https://pymupdf.readthedocs.io/)
+- [EasyOCR](https://github.com/JaidedAI/EasyOCR)
 
 ## ライセンス
 
 MIT License
 
 ## 更新履歴
+
+### v2.0.0 (2025-01-07)
+- 変換エンジンをPyMuPDFに変更
+- 画像抽出機能を追加
+- OCR機能を追加（EasyOCR、日本語・英語対応）
+- 位置情報を保持したMarkdown生成
+- GUI にオプションチェックボックスを追加
 
 ### v1.0.1 (2025-01-07)
 - EXE化時のmagikaモデルファイル問題を修正

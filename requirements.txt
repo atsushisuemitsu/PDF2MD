@@ -1,9 +1,16 @@
 # PDF to Markdown Converter Dependencies
+# Advanced version with image extraction and OCR support
 
-# Core conversion library (Microsoft)
-markitdown>=0.1.0
+# Core PDF parsing
+PyMuPDF>=1.23.0
 
-# Optional: Drag & Drop support for Windows
+# Image processing
+Pillow>=10.0.0
+
+# OCR for figure text recognition (optional but recommended)
+easyocr>=1.7.0
+
+# Optional: Drag & Drop support for Windows GUI
 tkinterdnd2>=0.3.0
 
 # For EXE building

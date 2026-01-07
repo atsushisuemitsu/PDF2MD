@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PDF2MD PyInstaller spec file
-# magikaモデルファイルを含めるための設定
+# PyMuPDF + EasyOCR version
 
 import sys
 import os
@@ -8,21 +8,32 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
 
-# magikaのデータファイルを収集
-magika_datas = collect_data_files('magika')
+# EasyOCRのモデルファイルを収集（初回実行時にダウンロードされる）
+easyocr_datas = []
+try:
+    easyocr_datas = collect_data_files('easyocr')
+except Exception:
+    pass
 
-# markitdownの追加データがあれば収集
-markitdown_datas = collect_data_files('markitdown')
+# PyMuPDFのデータファイル
+fitz_datas = []
+try:
+    fitz_datas = collect_data_files('fitz')
+except Exception:
+    pass
 
 a = Analysis(
     ['pdf2md.py'],
     pathex=[],
     binaries=[],
-    datas=magika_datas + markitdown_datas,
+    datas=easyocr_datas + fitz_datas,
     hiddenimports=[
-        'magika',
-        'magika.types',
-        'markitdown',
+        'fitz',
+        'PIL',
+        'PIL.Image',
+        'easyocr',
+        'torch',
+        'torchvision',
     ],
     hookspath=[],
     hooksconfig={},

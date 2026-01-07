@@ -29,8 +29,12 @@ Thumbs.db
 # Logs
 *.log
 
-# Test PDFs
+# Test PDFs and outputs
 *.pdf
+*_images/
+
+# Test output markdown files (keep README.md)
+LP-*.md
 
 # Build artifacts
 *.exe
