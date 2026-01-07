@@ -160,7 +160,7 @@ class PDF2MDGUI:
 
         # ボタンフレーム
         btn_frame = ttk.Frame(main_frame)
-        btn_frame.grid(row=1, column=0, fill="x", pady=5)
+        btn_frame.grid(row=1, column=0, sticky="ew", pady=5)
 
         ttk.Button(btn_frame, text="ファイル追加",
                   command=self._add_files).pack(side="left", padx=2)
