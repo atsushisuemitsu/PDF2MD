@@ -7,8 +7,8 @@ PyMuPDF>=1.23.0
 # Image processing
 Pillow>=10.0.0
 
-# OCR for figure text recognition (optional but recommended)
-easyocr>=1.7.0
+# OCR for figure text recognition (optional - requires 64-bit Python with PyTorch)
+# easyocr>=1.7.0
 
 # Optional: Drag & Drop support for Windows GUI
 tkinterdnd2>=0.3.0

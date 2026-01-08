@@ -1,0 +1,96 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+PDF2MD is a Windows desktop application that converts PDF files to Markdown format. It uses PyMuPDF for PDF parsing and EasyOCR for optical character recognition. The application supports both GUI (tkinter) and CLI modes.
+
+## Build Commands
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the application (GUI mode)
+python pdf2md.py
+
+# Run in CLI mode
+python pdf2md.py document.pdf
+python pdf2md.py --ocr document.pdf
+python pdf2md.py ./pdf_folder/
+
+# Build EXE (Windows)
+build.bat
+# or
+powershell -ExecutionPolicy Bypass -File build.ps1
+
+# The EXE is generated at dist/PDF2MD.exe
+```
+
+## Architecture
+
+The codebase is a single-file application (`pdf2md.py`) with the following key components:
+
+### Data Classes
+- `TextBlock`: Text with position, font info, and block type (heading1-6, list, caption, text)
+- `ImageBlock`: Image with position, OCR text, and caption association
+- `TableBlock`: Table cells with position and header row detection
+- `ListItem`: List item with level and type (bullet/numbered)
+
+### Core Classes
+
+**DocumentAnalyzer**: Analyzes entire document to determine heading hierarchy by:
+- Collecting font sizes across all pages
+- Identifying body text size (most frequent)
+- Mapping larger sizes to heading levels (H1-H6)
+
+**AdvancedTableExtractor**: Two-stage table detection:
+1. PyMuPDF's `find_tables()` for bordered tables
+2. Text position analysis for borderless tables (grids aligned by X coordinates)
+
+**ListDetector**: Detects list items using regex patterns for:
+- Bullet markers: `- • ● ○ ■ □ ・ ※ ★ ☆ → ⇒ ▶ ►`
+- Numbered patterns: `1.`, `(1)`, `a)`, `(a)`, `i.`, etc.
+
+**CaptionDetector**: Identifies figure/table captions matching patterns like:
+- 図1, Fig. 1, Figure 1, グラフ1, Chart 1, 写真1, Photo 1
+- 表1, Tab. 1, Table 1
+
+**AdvancedPDFConverter**: Main conversion pipeline:
+1. Document structure analysis (heading sizes)
+2. Per-page extraction: tables → text (excluding table regions) → images
+3. Caption-to-figure/table association (within 100pt distance)
+4. Sort blocks by page → Y → X coordinates
+5. Generate Markdown with page separators
+
+**PDF2MDGUI**: tkinter GUI with:
+- File list via Treeview
+- Drag & drop support (requires tkinterdnd2)
+- Background conversion threading
+- Progress tracking
+
+### Conversion Flow
+
+```
+PDF → DocumentAnalyzer (font analysis)
+    → Per page:
+        → AdvancedTableExtractor.extract_tables()
+        → _extract_text_blocks() (excluding table regions)
+        → _extract_image_blocks() + OCR
+    → _associate_captions() (link captions to nearest figure/table)
+    → Sort by position
+    → _generate_markdown()
+```
+
+## Key Dependencies
+
+- **PyMuPDF (fitz)**: PDF parsing, text extraction, table detection, image extraction
+- **EasyOCR**: OCR for Japanese and English text in images (pytesseract as fallback)
+- **Pillow**: Image processing
+- **tkinter/tkinterdnd2**: GUI and drag-drop support
+- **PyInstaller**: EXE packaging (uses PDF2MD.spec for config)
+
+## Language Support
+
+The application is designed for Japanese documents with English support. OCR defaults to `['ja', 'en']`. The README and GUI are in Japanese.

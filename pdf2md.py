@@ -588,6 +588,8 @@ class AdvancedPDFConverter:
                 self.ocr_reader = easyocr.Reader(self.ocr_languages, gpu=False)
             except Exception as e:
                 print(f"Warning: EasyOCR initialization failed: {e}")
+                import traceback
+                traceback.print_exc()
                 self.enable_ocr = False
 
         # 各種検出器
@@ -595,6 +597,82 @@ class AdvancedPDFConverter:
         self.table_extractor = AdvancedTableExtractor()
         self.list_detector = ListDetector()
         self.caption_detector = CaptionDetector()
+
+    def _check_font_encoding_issue(self, doc) -> bool:
+        """PDFのフォントエンコーディング問題をチェック"""
+        # 最初の数ページのテキストをサンプリング
+        sample_text = ""
+        for i in range(min(3, len(doc))):
+            sample_text += doc[i].get_text()
+
+        if len(sample_text) < 100:
+            return False
+
+        # 単一文字の繰り返しが多い場合はエンコーディング問題
+        char_counts = {}
+        for char in sample_text:
+            if char.isalpha():
+                char_counts[char] = char_counts.get(char, 0) + 1
+
+        if char_counts:
+            most_common_char = max(char_counts.keys(), key=lambda x: char_counts[x])
+            ratio = char_counts[most_common_char] / len(sample_text)
+            # 1文字が30%以上を占める場合は問題あり
+            if ratio > 0.3:
+                print(f"[INFO] Using page-level OCR due to font encoding issues...")
+                return True
+        return False
+
+    def _convert_with_page_ocr(self, doc, output_path: str, base_name: str,
+                                images_dir: str, extract_images: bool) -> Tuple[bool, str]:
+        """ページ全体をOCRで変換（フォント問題があるPDF用）"""
+        import numpy as np
+
+        md_lines = []
+        total_pages = len(doc)
+
+        for page_num in range(total_pages):
+            print(f"[OCR] Processing page {page_num + 1}/{total_pages}...")
+            page = doc[page_num]
+
+            # ページを画像としてレンダリング
+            pix = page.get_pixmap(dpi=150)
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+
+            # 大きい場合はリサイズ
+            max_size = 2000
+            if max(img.size) > max_size:
+                ratio = max_size / max(img.size)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+            # RGBに変換
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+
+            # OCR実行
+            img_np = np.array(img)
+            results = self.ocr_reader.readtext(img_np)
+
+            # ページ区切り
+            if page_num > 0:
+                md_lines.append("\n---\n")
+            md_lines.append(f"\n<!-- Page {page_num + 1} -->\n")
+
+            # テキストを結合
+            for result in results:
+                text = result[1].strip()
+                if text:
+                    md_lines.append(text)
+
+            md_lines.append("")
+
+        # 保存
+        markdown_content = "\n".join(md_lines)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(markdown_content)
+
+        return True, output_path
 
     def convert_file(self, pdf_path: str, output_path: str = None,
                      extract_images: bool = True) -> Tuple[bool, str]:
@@ -633,6 +711,13 @@ class AdvancedPDFConverter:
 
             # PDF解析
             doc = fitz.open(pdf_path)
+
+            # フォントエンコーディング問題をチェック
+            if self.enable_ocr and self.ocr_reader and self._check_font_encoding_issue(doc):
+                print("[INFO] Using page-level OCR due to font encoding issues...")
+                result = self._convert_with_page_ocr(doc, output_path, base_name, images_dir, extract_images)
+                doc.close()
+                return result
 
             # 文書構造分析（見出しサイズの推定など）
             self.doc_analyzer.analyze_document_structure(doc)
@@ -864,8 +949,23 @@ class AdvancedPDFConverter:
         """画像にOCRを実行"""
         try:
             if OCR_ENGINE == "easyocr" and self.ocr_reader:
+                import numpy as np
                 image = Image.open(io.BytesIO(image_bytes))
-                results = self.ocr_reader.readtext(image)
+
+                # 大きな画像はリサイズしてOCRを高速化（最大1500px）
+                max_size = 1500
+                if image.width > max_size or image.height > max_size:
+                    ratio = min(max_size / image.width, max_size / image.height)
+                    new_size = (int(image.width * ratio), int(image.height * ratio))
+                    image = image.resize(new_size, Image.Resampling.LANCZOS)
+
+                # RGBに変換（RGBA等の場合）
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
+
+                # EasyOCRはnumpy arrayを必要とする
+                image_np = np.array(image)
+                results = self.ocr_reader.readtext(image_np)
                 texts = [result[1] for result in results]
                 return "\n".join(texts)
 
