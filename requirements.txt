@@ -1,8 +1,12 @@
 # PDF to Markdown Converter Dependencies
-# Advanced version with image extraction and OCR support
+# Advanced version with image extraction, OCR, and layout preservation
 
 # Core PDF parsing
 PyMuPDF>=1.23.0
+
+# Layout-aware conversion (recommended)
+pymupdf4llm>=0.2.0
+pymupdf-layout>=1.0.0
 
 # Image processing
 Pillow>=10.0.0

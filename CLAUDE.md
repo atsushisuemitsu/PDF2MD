@@ -58,11 +58,34 @@ The codebase is a single-file application (`pdf2md.py`) with the following key c
 - 表1, Tab. 1, Table 1
 
 **AdvancedPDFConverter**: Main conversion pipeline:
-1. Document structure analysis (heading sizes)
-2. Per-page extraction: tables → text (excluding table regions) → images
-3. Caption-to-figure/table association (within 100pt distance)
-4. Sort blocks by page → Y → X coordinates
-5. Generate Markdown with page separators
+1. Font encoding issue detection (auto-detect problematic PDFs)
+2. PyMuPDF4LLM conversion (for normal PDFs with layout preservation)
+3. Page-level OCR conversion (for PDFs with font encoding issues)
+4. Document structure analysis (heading sizes)
+5. Per-page extraction: tables → text (excluding table regions) → images
+6. Caption-to-figure/table association (within 100pt distance)
+7. Sort blocks by page → Y → X coordinates
+8. Generate Markdown with page separators
+
+### OCR Conversion Features (v3.1+)
+
+**Font Encoding Detection** (`_check_font_encoding_issue`):
+- Samples first 3 pages of text
+- Detects when single character dominates (>30% of text)
+- Automatically switches to page-level OCR when issues detected
+
+**Page-Level OCR** (`_convert_with_page_ocr`):
+- Renders each page as image (200 DPI)
+- Extracts images with position information
+- Uses EasyOCR with bounding box coordinates
+- Reconstructs layout based on Y/X positions
+- Detects headings based on relative text size
+- Combines text and images in correct reading order
+
+**PyMuPDF4LLM Integration** (`_convert_with_pymupdf4llm`):
+- Uses pymupdf4llm for layout-aware conversion
+- Supports automatic OCR (with pymupdf-layout)
+- Extracts images with proper markdown references
 
 **PDF2MDGUI**: tkinter GUI with:
 - File list via Treeview
@@ -86,8 +109,11 @@ PDF → DocumentAnalyzer (font analysis)
 ## Key Dependencies
 
 - **PyMuPDF (fitz)**: PDF parsing, text extraction, table detection, image extraction
+- **pymupdf4llm**: Layout-aware PDF to Markdown conversion
+- **pymupdf-layout**: Enhanced layout detection with ML (optional, enables OCR)
 - **EasyOCR**: OCR for Japanese and English text in images (pytesseract as fallback)
 - **Pillow**: Image processing
+- **numpy**: Array processing for OCR
 - **tkinter/tkinterdnd2**: GUI and drag-drop support
 - **PyInstaller**: EXE packaging (uses PDF2MD.spec for config)
 

@@ -38,6 +38,21 @@ except ImportError:
     PYMUPDF_AVAILABLE = False
     print("Warning: PyMuPDF not installed. Run: pip install PyMuPDF")
 
+# PyMuPDF4LLM (レイアウト保持変換)
+PYMUPDF4LLM_AVAILABLE = False
+try:
+    # レイアウト機能を有効化（pymupdf4llmより先にインポート）
+    try:
+        import pymupdf.layout
+        LAYOUT_AVAILABLE = True
+    except ImportError:
+        LAYOUT_AVAILABLE = False
+
+    import pymupdf4llm
+    PYMUPDF4LLM_AVAILABLE = True
+except ImportError:
+    LAYOUT_AVAILABLE = False
+
 # Pillow
 try:
     from PIL import Image
@@ -625,45 +640,190 @@ class AdvancedPDFConverter:
 
     def _convert_with_page_ocr(self, doc, output_path: str, base_name: str,
                                 images_dir: str, extract_images: bool) -> Tuple[bool, str]:
-        """ページ全体をOCRで変換（フォント問題があるPDF用）"""
+        """ページ全体をOCRで変換（フォント問題があるPDF用）- レイアウト保持版"""
         import numpy as np
 
         md_lines = []
         total_pages = len(doc)
+        image_count = 0
 
         for page_num in range(total_pages):
             print(f"[OCR] Processing page {page_num + 1}/{total_pages}...")
             page = doc[page_num]
-
-            # ページを画像としてレンダリング
-            pix = page.get_pixmap(dpi=150)
-            img = Image.open(io.BytesIO(pix.tobytes("png")))
-
-            # 大きい場合はリサイズ
-            max_size = 2000
-            if max(img.size) > max_size:
-                ratio = max_size / max(img.size)
-                new_size = (int(img.width * ratio), int(img.height * ratio))
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
-
-            # RGBに変換
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-
-            # OCR実行
-            img_np = np.array(img)
-            results = self.ocr_reader.readtext(img_np)
+            page_width = page.rect.width
+            page_height = page.rect.height
 
             # ページ区切り
             if page_num > 0:
                 md_lines.append("\n---\n")
             md_lines.append(f"\n<!-- Page {page_num + 1} -->\n")
 
-            # テキストを結合
+            # 1. 画像を先に抽出（位置情報付き）
+            image_blocks = []
+            if extract_images:
+                image_list = page.get_images(full=True)
+                for img_index, img in enumerate(image_list):
+                    try:
+                        xref = img[0]
+                        # 画像の位置を取得
+                        img_rects = page.get_image_rects(xref)
+                        if img_rects:
+                            img_rect = img_rects[0]
+                            # 画像データを抽出
+                            base_image = doc.extract_image(xref)
+                            if base_image:
+                                image_bytes = base_image["image"]
+                                image_ext = base_image.get("ext", "png")
+
+                                # 小さすぎる画像はスキップ（アイコン等）
+                                if img_rect.width < 50 or img_rect.height < 50:
+                                    continue
+
+                                # 画像を保存
+                                image_count += 1
+                                image_filename = f"{base_name}_p{page_num + 1}_img{image_count}.{image_ext}"
+                                image_path = os.path.join(images_dir, image_filename)
+
+                                with open(image_path, 'wb') as f:
+                                    f.write(image_bytes)
+
+                                # 画像ブロックを記録（Y座標でソート用）
+                                rel_path = f"{base_name}_images/{image_filename}"
+                                image_blocks.append({
+                                    'y': img_rect.y0,
+                                    'x': img_rect.x0,
+                                    'width': img_rect.width,
+                                    'height': img_rect.height,
+                                    'markdown': f"\n![Image {image_count}]({rel_path})\n"
+                                })
+                    except Exception as e:
+                        pass
+
+            # 2. ページを画像としてレンダリングしてOCR
+            pix = page.get_pixmap(dpi=200)  # 高解像度でOCR精度向上
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+
+            # スケール係数（OCR座標→PDF座標変換用）
+            scale_x = page_width / img.width
+            scale_y = page_height / img.height
+
+            # 大きい場合はリサイズ
+            max_size = 2500
+            resize_ratio = 1.0
+            if max(img.size) > max_size:
+                resize_ratio = max_size / max(img.size)
+                new_size = (int(img.width * resize_ratio), int(img.height * resize_ratio))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+            # RGBに変換
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+
+            # OCR実行（位置情報付き）
+            img_np = np.array(img)
+            results = self.ocr_reader.readtext(img_np)
+
+            # 3. テキストブロックを構築（位置情報付き）
+            text_blocks = []
             for result in results:
-                text = result[1].strip()
-                if text:
-                    md_lines.append(text)
+                bbox, text, confidence = result
+                if not text.strip():
+                    continue
+
+                # バウンディングボックスからPDF座標を計算
+                # bbox = [[x1,y1], [x2,y1], [x2,y2], [x1,y2]]
+                ocr_x0 = min(p[0] for p in bbox) / resize_ratio
+                ocr_y0 = min(p[1] for p in bbox) / resize_ratio
+                ocr_x1 = max(p[0] for p in bbox) / resize_ratio
+                ocr_y1 = max(p[1] for p in bbox) / resize_ratio
+
+                # PDF座標に変換
+                pdf_x0 = ocr_x0 * scale_x
+                pdf_y0 = ocr_y0 * scale_y
+                pdf_x1 = ocr_x1 * scale_x
+                pdf_y1 = ocr_y1 * scale_y
+
+                text_blocks.append({
+                    'y': pdf_y0,
+                    'x': pdf_x0,
+                    'x1': pdf_x1,
+                    'y1': pdf_y1,
+                    'text': text.strip(),
+                    'height': pdf_y1 - pdf_y0
+                })
+
+            # 4. テキストと画像を位置でソートして結合
+            all_elements = []
+            for tb in text_blocks:
+                all_elements.append(('text', tb['y'], tb['x'], tb))
+            for ib in image_blocks:
+                all_elements.append(('image', ib['y'], ib['x'], ib))
+
+            # Y座標でソート、同じY座標ならX座標でソート
+            all_elements.sort(key=lambda e: (e[1], e[2]))
+
+            # テキストの中央値サイズを計算（見出し判定の基準）
+            text_heights = [tb['height'] for tb in text_blocks if tb['height'] > 5]
+            if text_heights:
+                text_heights.sort()
+                median_height = text_heights[len(text_heights) // 2]
+            else:
+                median_height = 15
+
+            # 5. レイアウトを考慮したMarkdown生成
+            line_buffer = []
+            line_y = None
+            line_threshold = median_height * 0.8  # 同じ行とみなすY座標の閾値
+
+            for elem_type, y, x, elem in all_elements:
+                if elem_type == 'image':
+                    # 行バッファをフラッシュ
+                    if line_buffer:
+                        md_lines.append(' '.join(line_buffer))
+                        line_buffer = []
+                        line_y = None
+                    md_lines.append(elem['markdown'])
+                else:
+                    # テキスト要素
+                    text = elem['text']
+
+                    # 段落判定（大きなY間隔）
+                    if line_y is not None and abs(y - line_y) > line_threshold:
+                        # 新しい行/段落
+                        if line_buffer:
+                            md_lines.append(' '.join(line_buffer))
+                            line_buffer = []
+
+                        # 大きな間隔は段落区切り
+                        if abs(y - line_y) > line_threshold * 2:
+                            md_lines.append("")
+
+                    # 見出し判定（テキストサイズが中央値より1.5倍以上大きい場合）
+                    is_heading = (
+                        elem['height'] > median_height * 1.5 and
+                        len(text) < 80 and
+                        len(text) > 1 and
+                        not text.startswith('・') and
+                        not text.startswith('-')
+                    )
+
+                    if is_heading:
+                        if line_buffer:
+                            md_lines.append(' '.join(line_buffer))
+                            line_buffer = []
+                        if elem['height'] > median_height * 2:
+                            md_lines.append(f"\n## {text}\n")
+                        else:
+                            md_lines.append(f"\n### {text}\n")
+                        line_y = y
+                        continue
+
+                    line_buffer.append(text)
+                    line_y = y
+
+            # 残りのバッファをフラッシュ
+            if line_buffer:
+                md_lines.append(' '.join(line_buffer))
 
             md_lines.append("")
 
@@ -673,6 +833,39 @@ class AdvancedPDFConverter:
             f.write(markdown_content)
 
         return True, output_path
+
+    def _convert_with_pymupdf4llm(self, pdf_path: str, output_path: str,
+                                   images_dir: str, extract_images: bool) -> Tuple[bool, str]:
+        """PyMuPDF4LLMを使用したレイアウト保持変換"""
+        if not PYMUPDF4LLM_AVAILABLE:
+            return False, "pymupdf4llm is not available"
+
+        try:
+            print("[INFO] Converting with PyMuPDF4LLM (layout-aware)...")
+
+            # 画像抽出オプション
+            kwargs = {
+                'write_images': extract_images,
+                'image_path': images_dir,
+                'image_format': 'png',
+                'dpi': 150,
+                'page_chunks': False,
+            }
+
+            # レイアウト機能が有効な場合はOCRも有効化
+            if LAYOUT_AVAILABLE:
+                kwargs['use_ocr'] = True
+                kwargs['ocr_dpi'] = 300
+
+            md_content = pymupdf4llm.to_markdown(pdf_path, **kwargs)
+
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(md_content)
+
+            return True, output_path
+
+        except Exception as e:
+            return False, f"PyMuPDF4LLM conversion failed: {e}"
 
     def convert_file(self, pdf_path: str, output_path: str = None,
                      extract_images: bool = True) -> Tuple[bool, str]:
@@ -713,11 +906,26 @@ class AdvancedPDFConverter:
             doc = fitz.open(pdf_path)
 
             # フォントエンコーディング問題をチェック
-            if self.enable_ocr and self.ocr_reader and self._check_font_encoding_issue(doc):
-                print("[INFO] Using page-level OCR due to font encoding issues...")
-                result = self._convert_with_page_ocr(doc, output_path, base_name, images_dir, extract_images)
-                doc.close()
-                return result
+            has_font_issue = self._check_font_encoding_issue(doc)
+
+            if has_font_issue:
+                # フォント問題がある場合はOCRベースの変換
+                if self.enable_ocr and self.ocr_reader:
+                    print("[INFO] Font encoding issues detected, using OCR-based conversion...")
+                    result = self._convert_with_page_ocr(doc, output_path, base_name, images_dir, extract_images)
+                    doc.close()
+                    return result
+                else:
+                    print("[WARNING] Font encoding issues detected but OCR is not available")
+            else:
+                # フォント問題がない場合はpymupdf4llmを試す
+                if PYMUPDF4LLM_AVAILABLE:
+                    doc.close()
+                    result = self._convert_with_pymupdf4llm(pdf_path, output_path, images_dir, extract_images)
+                    if result[0]:  # 成功した場合
+                        return result
+                    print(f"[WARNING] PyMuPDF4LLM failed, falling back to standard conversion: {result[1]}")
+                    doc = fitz.open(pdf_path)  # 再度開く
 
             # 文書構造分析（見出しサイズの推定など）
             self.doc_analyzer.analyze_document_structure(doc)
