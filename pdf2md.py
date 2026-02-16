@@ -2101,6 +2101,8 @@ def main():
     # コマンドライン引数がある場合はCLIモード
     if len(sys.argv) > 1:
         converter = AdvancedPDFConverter(enable_ocr=True)
+        has_error = False
+        converted_count = 0
 
         for arg in sys.argv[1:]:
             if os.path.isfile(arg) and arg.lower().endswith('.pdf'):
@@ -2108,15 +2110,41 @@ def main():
                 success, result = converter.convert_file(arg)
                 if success:
                     print(f"  -> {result}")
+                    converted_count += 1
                 else:
                     print(f"  Error: {result}")
+                    has_error = True
             elif os.path.isdir(arg):
                 print(f"Converting folder: {arg}")
                 for pdf_path in Path(arg).glob('*.pdf'):
                     print(f"  Converting: {pdf_path.name}")
                     success, result = converter.convert_file(str(pdf_path))
-                    status = "OK" if success else f"Error: {result}"
-                    print(f"    {status}")
+                    if success:
+                        print(f"    OK")
+                        converted_count += 1
+                    else:
+                        print(f"    Error: {result}")
+                        has_error = True
+
+        # Change Location-2026/02/16 - CLI completion message for context menu launches
+        # Original Code
+        # (no completion message)
+        # Updated Code
+        print()
+        if has_error:
+            print(f"変換完了（{converted_count}件成功、エラーあり）")
+            print("Press any key to close...")
+            try:
+                import msvcrt
+                msvcrt.getch()
+            except (ImportError, OSError):
+                input()
+        else:
+            print(f"変換完了（{converted_count}件成功）")
+            print("3秒後に自動で閉じます...")
+            import time
+            time.sleep(3)
+        # Change Location-2026/02/16 - CLI completion message for context menu launches
     else:
         # GUIモード
         app = PDF2MDGUI()
