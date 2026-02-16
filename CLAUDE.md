@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-PDF2MD is a Windows desktop application that converts PDF files to Markdown format. It uses PyMuPDF for PDF parsing and EasyOCR for optical character recognition. The application supports both GUI (tkinter) and CLI modes.
+PDF2MD is a Windows desktop application (v3.1) that converts PDF files to Markdown format. It uses PyMuPDF for PDF parsing and EasyOCR for optical character recognition. The application supports both GUI (tkinter) and CLI modes. The entire application is a single Python file: `pdf2md.py`.
+
+Primary language: Python 3.13 on Windows. UI labels and comments are in Japanese.
 
 ## Build Commands
 
@@ -62,10 +64,16 @@ The codebase is a single-file application (`pdf2md.py`) with the following key c
 2. PyMuPDF4LLM conversion (for normal PDFs with layout preservation)
 3. Page-level OCR conversion (for PDFs with font encoding issues)
 4. Document structure analysis (heading sizes)
-5. Per-page extraction: tables → text (excluding table regions) → images
-6. Caption-to-figure/table association (within 100pt distance)
-7. Sort blocks by page → Y → X coordinates
-8. Generate Markdown with page separators
+5. Per-page extraction: tables → text (excluding table regions) → images (raster + vector drawings)
+6. Remove text blocks overlapping full-page drawing images
+7. Caption-to-figure/table association (within 100pt distance)
+8. Sort blocks by page → Y → X coordinates
+9. Generate Markdown with page separators
+
+### Image Extraction (two-stage)
+
+- **Raster images** (`_extract_raster_images`) — traditional `page.get_images()` for embedded bitmaps, skip < 50x50px
+- **Vector drawings** (`_extract_drawing_blocks`) — `page.get_drawings()` → spatial clustering (`_cluster_drawing_rects`) → filtering (skip single lines, code block backgrounds, table overlaps) → render via `page.get_pixmap(clip=rect)` as PNG. Full-page drawing clusters (chapter pages) render the whole page; partial clusters render with margin.
 
 ### OCR Conversion Features (v3.1+)
 
@@ -96,19 +104,24 @@ The codebase is a single-file application (`pdf2md.py`) with the following key c
 ### Conversion Flow
 
 ```
-PDF → DocumentAnalyzer (font analysis)
-    → Per page:
-        → AdvancedTableExtractor.extract_tables()
-        → _extract_text_blocks() (excluding table regions)
-        → _extract_image_blocks() + OCR
-    → _associate_captions() (link captions to nearest figure/table)
-    → Sort by position
-    → _generate_markdown()
+PDF → Font encoding check
+    → (if issue) Page-level OCR conversion
+    → (if pymupdf4llm available) Layout-aware conversion
+    → (fallback) Standard pipeline:
+        → DocumentAnalyzer (font analysis)
+        → Per page:
+            → AdvancedTableExtractor.extract_tables()
+            → _extract_text_blocks() (excluding table regions)
+            → _extract_image_blocks() (raster + vector drawings)
+        → _remove_text_in_drawing_images() (full-page images only)
+        → _associate_captions() (link captions to nearest figure/table)
+        → Sort by position
+        → _generate_markdown()
 ```
 
 ## Key Dependencies
 
-- **PyMuPDF (fitz)**: PDF parsing, text extraction, table detection, image extraction
+- **PyMuPDF (fitz)**: PDF parsing, text extraction, table detection, image extraction, vector drawing rendering
 - **pymupdf4llm**: Layout-aware PDF to Markdown conversion
 - **pymupdf-layout**: Enhanced layout detection with ML (optional, enables OCR)
 - **EasyOCR**: OCR for Japanese and English text in images (pytesseract as fallback)
@@ -120,3 +133,7 @@ PDF → DocumentAnalyzer (font analysis)
 ## Language Support
 
 The application is designed for Japanese documents with English support. OCR defaults to `['ja', 'en']`. The README and GUI are in Japanese.
+
+## Known Gaps
+
+- CLI flags `--ocr` and `--no-images` are documented in README but not implemented in `main()` — CLI always processes with OCR enabled and images extracted.

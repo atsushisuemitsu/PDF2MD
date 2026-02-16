@@ -943,14 +943,18 @@ class AdvancedPDFConverter:
                 text_blocks = self._extract_text_blocks(page, page_num, table_regions)
                 all_blocks.extend(text_blocks)
 
-                # 画像ブロック抽出
+                # 画像ブロック抽出（ラスター画像 + ベクター描画領域）
                 if extract_images:
                     image_blocks = self._extract_image_blocks(
-                        page, page_num, images_dir, base_name
+                        page, page_num, images_dir, base_name, table_regions
                     )
                     all_blocks.extend(image_blocks)
 
             doc.close()
+
+            # 描画画像領域と重複するテキストブロックを除外
+            # （ベクター描画を画像化した際、内部テキストの重複を防ぐ）
+            all_blocks = self._remove_text_in_drawing_images(all_blocks)
 
             # キャプションと図表の紐付け
             all_blocks = self._associate_captions(all_blocks)
@@ -1092,12 +1096,35 @@ class AdvancedPDFConverter:
             return min(int(relative_x / indent_unit), 4)
 
     def _extract_image_blocks(self, page, page_num: int,
-                              images_dir: str, base_name: str) -> List[ImageBlock]:
-        """ページから画像ブロックを抽出"""
+                              images_dir: str, base_name: str,
+                              table_regions: List[Tuple] = None) -> List[ImageBlock]:
+        """ページから画像ブロックを抽出（ラスター画像 + ベクター描画領域）"""
+        blocks = []
+        table_regions = table_regions or []
+        img_counter = [0]  # mutable counter for shared indexing
+
+        # 1. ラスター画像の抽出（従来方式）
+        raster_blocks = self._extract_raster_images(
+            page, page_num, images_dir, base_name, img_counter
+        )
+        blocks.extend(raster_blocks)
+
+        # 2. ベクター描画領域の抽出（新規）
+        drawing_blocks = self._extract_drawing_blocks(
+            page, page_num, images_dir, base_name, table_regions, img_counter
+        )
+        blocks.extend(drawing_blocks)
+
+        return blocks
+
+    def _extract_raster_images(self, page, page_num: int,
+                               images_dir: str, base_name: str,
+                               img_counter: list) -> List[ImageBlock]:
+        """ラスター画像（埋め込みビットマップ）を抽出"""
         blocks = []
         image_list = page.get_images(full=True)
 
-        for img_index, img_info in enumerate(image_list):
+        for img_info in image_list:
             try:
                 xref = img_info[0]
 
@@ -1123,8 +1150,11 @@ class AdvancedPDFConverter:
                 else:
                     x0, y0, x1, y1 = 100, page_num * 100, 500, page_num * 100 + 200
 
+                img_counter[0] += 1
+                img_idx = img_counter[0]
+
                 # 画像保存
-                img_filename = f"page{page_num + 1}_img{img_index + 1}.{image_ext}"
+                img_filename = f"page{page_num + 1}_img{img_idx}.{image_ext}"
                 img_path = os.path.join(images_dir, img_filename)
 
                 with open(img_path, 'wb') as f:
@@ -1142,16 +1172,199 @@ class AdvancedPDFConverter:
                     x1=x1,
                     y1=y1,
                     page_num=page_num,
-                    image_index=img_index,
+                    image_index=img_idx,
                     ocr_text=ocr_text,
                     image_path=f"{base_name}_images/{img_filename}"
                 ))
 
             except Exception as e:
-                print(f"Warning: Failed to extract image {img_index}: {e}")
+                print(f"Warning: Failed to extract raster image: {e}")
                 continue
 
         return blocks
+
+    def _extract_drawing_blocks(self, page, page_num: int,
+                                images_dir: str, base_name: str,
+                                table_regions: List[Tuple],
+                                img_counter: list) -> List[ImageBlock]:
+        """ベクター描画領域を検出し、画像としてレンダリング・抽出"""
+        blocks = []
+
+        drawings = page.get_drawings()
+        if not drawings:
+            return blocks
+
+        page_width = page.rect.width
+        page_height = page.rect.height
+        page_area = page_width * page_height
+
+        # 描画要素の矩形を収集
+        draw_rects = []
+        draw_infos = []
+        for d in drawings:
+            r = d.get("rect")
+            if r and r.width > 0 and r.height > 0:
+                draw_rects.append(r)
+                draw_infos.append(d)
+            elif r and (r.width > 0 or r.height > 0):
+                # 線（幅または高さが0）も収集
+                draw_rects.append(r)
+                draw_infos.append(d)
+
+        if not draw_rects:
+            return blocks
+
+        # 描画要素をクラスタリング（空間的に近い要素をグループ化）
+        clusters = self._cluster_drawing_rects(draw_rects, proximity=5)
+
+        for cluster_rect, member_indices in clusters:
+            cw = cluster_rect.x1 - cluster_rect.x0
+            ch = cluster_rect.y1 - cluster_rect.y0
+            c_area = cw * ch
+
+            # --- フィルタリング ---
+
+            # 小さすぎるクラスタをスキップ（装飾要素やアイコン）
+            if cw < 80 or ch < 30:
+                continue
+
+            # 単一の線（セパレータ等）をスキップ
+            if len(member_indices) == 1:
+                d = draw_infos[member_indices[0]]
+                items = d.get("items", [])
+                if len(items) == 1 and items[0][0] == "l":
+                    continue
+
+            # 単一の塗りつぶし矩形（コードブロック背景等）をスキップ
+            # テキスト内容がメインの場合、画像化は不要
+            if len(member_indices) == 1:
+                d = draw_infos[member_indices[0]]
+                items = d.get("items", [])
+                fill = d.get("fill")
+                # 塗りつぶし矩形（角丸含む）でアイテム数が少ない = 背景ボックス
+                if fill is not None and len(items) <= 8:
+                    # 矩形/角丸矩形アイテムのみかチェック
+                    item_types = set(it[0] for it in items)
+                    if item_types.issubset({"re", "c", "l", "qu"}):
+                        continue
+
+            # 表領域との重複チェック
+            if self._overlaps_regions(cluster_rect, table_regions, threshold=0.5):
+                continue
+
+            # フルページ背景かチェック（章タイトルページ等）
+            is_full_page = (c_area / page_area > 0.85)
+
+            if is_full_page:
+                # フルページ描画: ページ全体をレンダリング
+                render_rect = page.rect
+            else:
+                # 部分描画: クラスタ領域に少しマージンを追加
+                margin = 2
+                render_rect = fitz.Rect(
+                    max(0, cluster_rect.x0 - margin),
+                    max(0, cluster_rect.y0 - margin),
+                    min(page_width, cluster_rect.x1 + margin),
+                    min(page_height, cluster_rect.y1 + margin)
+                )
+
+            try:
+                # ベクター描画領域をPNG画像としてレンダリング
+                # 解像度: 2倍（高品質）、フルページは1.5倍
+                scale = 1.5 if is_full_page else 2.0
+                mat = fitz.Matrix(scale, scale)
+                pix = page.get_pixmap(matrix=mat, clip=render_rect)
+                image_bytes = pix.tobytes("png")
+
+                img_counter[0] += 1
+                img_idx = img_counter[0]
+
+                img_filename = f"page{page_num + 1}_img{img_idx}.png"
+                img_path = os.path.join(images_dir, img_filename)
+
+                with open(img_path, "wb") as f:
+                    f.write(image_bytes)
+
+                # OCR実行
+                ocr_text = ""
+                if self.enable_ocr and self.ocr_reader:
+                    ocr_text = self._perform_ocr(image_bytes)
+
+                blocks.append(ImageBlock(
+                    image_data=image_bytes,
+                    x0=render_rect.x0,
+                    y0=render_rect.y0,
+                    x1=render_rect.x1,
+                    y1=render_rect.y1,
+                    page_num=page_num,
+                    image_index=img_idx,
+                    ocr_text=ocr_text,
+                    image_path=f"{base_name}_images/{img_filename}"
+                ))
+
+            except Exception as e:
+                print(f"Warning: Failed to render drawing region on page {page_num + 1}: {e}")
+                continue
+
+        return blocks
+
+    def _cluster_drawing_rects(self, rects: list, proximity: float = 5) -> list:
+        """描画矩形を空間的にクラスタリング
+
+        Returns:
+            List of (cluster_rect, member_indices)
+        """
+        n = len(rects)
+        used = [False] * n
+        clusters = []
+
+        for i in range(n):
+            if used[i]:
+                continue
+
+            cluster_rect = fitz.Rect(rects[i])
+            members = [i]
+            used[i] = True
+
+            changed = True
+            while changed:
+                changed = False
+                for j in range(n):
+                    if used[j]:
+                        continue
+                    # クラスタ矩形を少し拡張して近接チェック
+                    expanded = fitz.Rect(cluster_rect)
+                    expanded.x0 -= proximity
+                    expanded.y0 -= proximity
+                    expanded.x1 += proximity
+                    expanded.y1 += proximity
+                    if expanded.intersects(rects[j]):
+                        cluster_rect |= rects[j]  # union
+                        members.append(j)
+                        used[j] = True
+                        changed = True
+
+            clusters.append((cluster_rect, members))
+
+        return clusters
+
+    def _overlaps_regions(self, rect, regions: List[Tuple],
+                          threshold: float = 0.5) -> bool:
+        """矩形が既存領域と一定以上重複するかチェック"""
+        rx0, ry0, rx1, ry1 = rect.x0, rect.y0, rect.x1, rect.y1
+        rect_area = (rx1 - rx0) * (ry1 - ry0)
+        if rect_area <= 0:
+            return False
+
+        for region in regions:
+            tx0, ty0, tx1, ty1 = region
+            overlap_x = max(0, min(rx1, tx1) - max(rx0, tx0))
+            overlap_y = max(0, min(ry1, ty1) - max(ry0, ty0))
+            overlap_area = overlap_x * overlap_y
+            if overlap_area / rect_area > threshold:
+                return True
+
+        return False
 
     def _perform_ocr(self, image_bytes: bytes) -> str:
         """画像にOCRを実行"""
@@ -1186,6 +1399,47 @@ class AdvancedPDFConverter:
             print(f"OCR error: {e}")
 
         return ""
+
+    def _remove_text_in_drawing_images(self, blocks: List) -> List:
+        """フルページ描画画像に含まれるテキストブロックを除外
+
+        章タイトルページ等のフルページ画像に含まれるテキストは、
+        画像自体にレンダリングされているため重複を防ぐ。
+        部分的な描画領域（コードブロック等）のテキストは保持する。
+        """
+        # フルページ画像ブロック（ページの85%以上を占める画像）のみ対象
+        full_page_images = []
+        for block in blocks:
+            if isinstance(block, ImageBlock):
+                img_w = block.x1 - block.x0
+                img_h = block.y1 - block.y0
+                # フルページ判定: 画像が大きい場合のみ
+                if img_w > 600 and img_h > 400:
+                    full_page_images.append(block)
+
+        if not full_page_images:
+            return blocks
+
+        filtered = []
+        for block in blocks:
+            if isinstance(block, TextBlock):
+                contained = False
+                for img in full_page_images:
+                    if (block.page_num == img.page_num and
+                        img.x0 <= block.x0 and block.x1 <= img.x1 and
+                        img.y0 <= block.y0 and block.y1 <= img.y1):
+                        contained = True
+                        break
+                if not contained:
+                    filtered.append(block)
+            else:
+                filtered.append(block)
+
+        removed = len(blocks) - len(filtered)
+        if removed > 0:
+            print(f"Info: Removed {removed} text blocks overlapping with full-page images")
+
+        return filtered
 
     def _associate_captions(self, blocks: List) -> List:
         """キャプションと図表を紐付け"""
