@@ -920,12 +920,18 @@ class AdvancedPDFConverter:
             else:
                 # フォント問題がない場合はpymupdf4llmを試す
                 if PYMUPDF4LLM_AVAILABLE:
-                    doc.close()
+                    doc_for_drawings = doc  # ベクター描画抽出用に保持
                     result = self._convert_with_pymupdf4llm(pdf_path, output_path, images_dir, extract_images)
                     if result[0]:  # 成功した場合
+                        # pymupdf4llm成功後もベクター描画画像を補完
+                        if extract_images:
+                            self._supplement_vector_drawings(
+                                doc_for_drawings, output_path, images_dir, base_name
+                            )
+                        doc_for_drawings.close()
                         return result
                     print(f"[WARNING] PyMuPDF4LLM failed, falling back to standard conversion: {result[1]}")
-                    doc = fitz.open(pdf_path)  # 再度開く
+                    # doc はまだ開いている
 
             # 文書構造分析（見出しサイズの推定など）
             self.doc_analyzer.analyze_document_structure(doc)
@@ -959,8 +965,8 @@ class AdvancedPDFConverter:
             # キャプションと図表の紐付け
             all_blocks = self._associate_captions(all_blocks)
 
-            # ブロックをソート（ページ順 → Y座標順 → X座標順）
-            all_blocks.sort(key=lambda b: (b.page_num, b.y0, b.x0))
+            # ブロックをソート（ページ順、カラム検出対応）
+            all_blocks = self._sort_blocks_with_columns(all_blocks)
 
             # Markdown生成
             markdown_content = self._generate_markdown(all_blocks, base_name)
@@ -1487,6 +1493,182 @@ class AdvancedPDFConverter:
 
         # キャプションブロックは除外（図表に紐付けたので）
         return [b for b in blocks if not (isinstance(b, TextBlock) and b.block_type == "caption")]
+
+    def _supplement_vector_drawings(self, doc, output_path: str,
+                                     images_dir: str, base_name: str):
+        """pymupdf4llm変換後にベクター描画画像を補完
+
+        pymupdf4llmがテキスト変換に成功した後、ベクター描画で構成される
+        ビジュアル要素（章タイトルページ等）を追加抽出する。
+        pymupdf4llmが既に同一ページの画像を抽出済みの場合はそちらを
+        ベクター描画画像で置換する（フルページ描画の方が高品質なため）。
+        """
+        existing_images = set(os.listdir(images_dir)) if os.path.exists(images_dir) else set()
+        img_counter = [len(existing_images)]
+        added_images = []
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            table_regions = []
+            try:
+                tables = list(page.find_tables())
+                table_regions = [t.bbox for t in tables]
+            except Exception:
+                pass
+
+            drawing_blocks = self._extract_drawing_blocks(
+                page, page_num, images_dir, base_name, table_regions, img_counter
+            )
+
+            for img_block in drawing_blocks:
+                added_images.append((page_num, img_block))
+
+        if not added_images:
+            return
+
+        try:
+            with open(output_path, 'r', encoding='utf-8') as f:
+                md_content = f.read()
+
+            # pymupdf4llmが生成した画像参照を検出（パターン: base_name.pdf-{page}-{idx}.png）
+            import re
+            pymupdf4llm_img_pattern = re.compile(
+                r'!\[([^\]]*)\]\(([^)]*' + re.escape(base_name) + r'[^)]*?-(\d+)-\d+\.png)\)'
+            )
+
+            # ページ番号→pymupdf4llm画像参照のマッピングを作成
+            pymupdf4llm_pages = {}
+            for m in pymupdf4llm_img_pattern.finditer(md_content):
+                p4l_page = int(m.group(3))
+                pymupdf4llm_pages[p4l_page] = m.group(0)  # full match
+
+            replaced_count = 0
+            inserted_count = 0
+            files_to_delete = []
+
+            # 重複ページの画像を置換、新規ページの画像を挿入
+            for page_num, img_block in reversed(added_images):
+                img_md = f"\n![図{page_num + 1}]({img_block.image_path})\n"
+
+                if page_num in pymupdf4llm_pages:
+                    # pymupdf4llm画像をベクター描画で置換（フルページ版の方が高品質）
+                    old_ref = pymupdf4llm_pages[page_num]
+                    md_content = md_content.replace(old_ref, f"![図{page_num + 1}]({img_block.image_path})")
+                    replaced_count += 1
+                    # 置換されたpymupdf4llm画像ファイルを削除対象に
+                    old_match = re.search(r'\(([^)]+)\)', old_ref)
+                    if old_match:
+                        old_path = old_match.group(1)
+                        if old_path.startswith('./'):
+                            old_path = old_path[2:]
+                        abs_old_path = os.path.join(os.path.dirname(output_path), old_path)
+                        files_to_delete.append(abs_old_path)
+                elif page_num == 0:
+                    # 表紙（ページ1）はMarkdownの先頭に挿入
+                    md_content = img_md.lstrip('\n') + "\n" + md_content
+                    inserted_count += 1
+                else:
+                    # 対応するページ番号テキストの前に挿入を試みる
+                    page_marker = f"\n{page_num + 1}\n"
+                    idx = md_content.find(page_marker)
+                    if idx >= 0:
+                        md_content = md_content[:idx] + img_md + md_content[idx:]
+                    else:
+                        # 見つからない場合は末尾に追加
+                        md_content += f"\n<!-- Page {page_num + 1} -->\n{img_md}"
+                    inserted_count += 1
+
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(md_content)
+
+            # 置換済みの旧画像ファイルを削除
+            for fpath in files_to_delete:
+                try:
+                    if os.path.exists(fpath):
+                        os.remove(fpath)
+                except Exception:
+                    pass
+
+            total = replaced_count + inserted_count
+            print(f"Info: Supplemented {total} vector drawing images "
+                  f"(replaced {replaced_count}, inserted {inserted_count})")
+
+        except Exception as e:
+            print(f"Warning: Failed to supplement vector drawings: {e}")
+
+    def _sort_blocks_with_columns(self, blocks: List) -> List:
+        """ブロックをページ順にソート（マルチカラムレイアウト対応）
+
+        2カラムレイアウトを検出した場合、左カラム→右カラムの順で出力し、
+        テキストの読み順を正しく保持する。
+        """
+        if not blocks:
+            return blocks
+
+        # ページごとにブロックをグルーピング
+        pages = defaultdict(list)
+        for b in blocks:
+            pages[b.page_num].append(b)
+
+        sorted_blocks = []
+        for page_num in sorted(pages.keys()):
+            page_blocks = pages[page_num]
+
+            # フルページ画像のみのページはそのまま
+            if len(page_blocks) == 1 and isinstance(page_blocks[0], ImageBlock):
+                sorted_blocks.extend(page_blocks)
+                continue
+
+            # テキスト/表ブロックのX座標分布を分析してカラム検出
+            x_positions = []
+            for b in page_blocks:
+                if isinstance(b, (TextBlock, TableBlock)):
+                    x_center = (b.x0 + b.x1) / 2
+                    x_positions.append(x_center)
+
+            if len(x_positions) >= 4:
+                # X座標の中央値でカラム境界を推定
+                x_positions.sort()
+                x_median = x_positions[len(x_positions) // 2]
+
+                # 左右に分散しているか確認
+                left_count = sum(1 for x in x_positions if x < x_median - 50)
+                right_count = sum(1 for x in x_positions if x > x_median + 50)
+
+                if left_count >= 2 and right_count >= 2:
+                    # 2カラムレイアウト検出: カラム境界 = x_median
+                    col_boundary = x_median
+
+                    left_blocks = []
+                    right_blocks = []
+                    full_width_blocks = []
+
+                    for b in page_blocks:
+                        b_center = (b.x0 + b.x1) / 2
+                        b_width = b.x1 - b.x0
+
+                        # フルページ画像やページ幅の70%以上を占める要素
+                        if isinstance(b, ImageBlock) and b_width > col_boundary * 1.4:
+                            full_width_blocks.append(b)
+                        elif b_center < col_boundary:
+                            left_blocks.append(b)
+                        else:
+                            right_blocks.append(b)
+
+                    # フルページ要素 → 左カラム(Y順) → 右カラム(Y順)
+                    full_width_blocks.sort(key=lambda b: (b.y0, b.x0))
+                    left_blocks.sort(key=lambda b: (b.y0, b.x0))
+                    right_blocks.sort(key=lambda b: (b.y0, b.x0))
+                    sorted_blocks.extend(full_width_blocks)
+                    sorted_blocks.extend(left_blocks)
+                    sorted_blocks.extend(right_blocks)
+                    continue
+
+            # 単カラム: Y座標順 → X座標順
+            page_blocks.sort(key=lambda b: (b.y0, b.x0))
+            sorted_blocks.extend(page_blocks)
+
+        return sorted_blocks
 
     def _generate_markdown(self, blocks: List, base_name: str) -> str:
         """ブロックからMarkdownを生成"""

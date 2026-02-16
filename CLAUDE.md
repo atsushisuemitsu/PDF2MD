@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-PDF2MD is a Windows desktop application (v3.1) that converts PDF files to Markdown format. It uses PyMuPDF for PDF parsing and EasyOCR for optical character recognition. The application supports both GUI (tkinter) and CLI modes. The entire application is a single Python file: `pdf2md.py`.
+PDF2MD is a Windows desktop application (v3.2) that converts PDF files to Markdown format. It uses PyMuPDF and PyMuPDF4LLM for PDF parsing with layout-aware conversion, and EasyOCR for optical character recognition. The application supports both GUI (tkinter) and CLI modes. The entire application is a single Python file: `pdf2md.py`.
 
 Primary language: Python 3.13 on Windows. UI labels and comments are in Japanese.
 
@@ -62,12 +62,15 @@ The codebase is a single-file application (`pdf2md.py`) with the following key c
 **AdvancedPDFConverter**: Main conversion pipeline:
 1. Font encoding issue detection (auto-detect problematic PDFs)
 2. PyMuPDF4LLM conversion (for normal PDFs with layout preservation)
+   - After success: `_supplement_vector_drawings()` detects and inserts chapter title page images
+   - Duplicate detection: replaces pymupdf4llm images with higher-quality full-page vector drawings
+   - Cover page insertion: places cover at markdown beginning
 3. Page-level OCR conversion (for PDFs with font encoding issues)
 4. Document structure analysis (heading sizes)
 5. Per-page extraction: tables → text (excluding table regions) → images (raster + vector drawings)
 6. Remove text blocks overlapping full-page drawing images
 7. Caption-to-figure/table association (within 100pt distance)
-8. Sort blocks by page → Y → X coordinates
+8. Sort blocks with column detection (`_sort_blocks_with_columns()` — detects two-column layout via X-coordinate distribution)
 9. Generate Markdown with page separators
 
 ### Image Extraction (two-stage)
@@ -107,6 +110,7 @@ The codebase is a single-file application (`pdf2md.py`) with the following key c
 PDF → Font encoding check
     → (if issue) Page-level OCR conversion
     → (if pymupdf4llm available) Layout-aware conversion
+        → _supplement_vector_drawings() (detect/insert chapter title images, replace duplicates)
     → (fallback) Standard pipeline:
         → DocumentAnalyzer (font analysis)
         → Per page:
@@ -115,7 +119,7 @@ PDF → Font encoding check
             → _extract_image_blocks() (raster + vector drawings)
         → _remove_text_in_drawing_images() (full-page images only)
         → _associate_captions() (link captions to nearest figure/table)
-        → Sort by position
+        → _sort_blocks_with_columns() (two-column detection and ordering)
         → _generate_markdown()
 ```
 
