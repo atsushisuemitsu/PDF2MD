@@ -1,9 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PDF2MD PyInstaller spec file
-# PyMuPDF + EasyOCR version
+# PyMuPDF + PyMuPDF4LLM + EasyOCR version
 
 import sys
 import os
+import importlib
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_all
 
 block_cipher = None
@@ -26,6 +27,26 @@ try:
 except Exception:
     pass
 
+# pymupdfのpydバイナリを明示的に収集（collect_allで漏れる場合がある）
+try:
+    pymupdf_spec = importlib.util.find_spec('pymupdf')
+    if pymupdf_spec and pymupdf_spec.submodule_search_locations:
+        pymupdf_dir = pymupdf_spec.submodule_search_locations[0]
+        for fname in os.listdir(pymupdf_dir):
+            fpath = os.path.join(pymupdf_dir, fname)
+            if fname.endswith('.pyd') or fname.endswith('.dll'):
+                pymupdf_binaries.append((fpath, 'pymupdf'))
+except Exception:
+    pass
+
+# pymupdf4llmのデータファイルを収集
+pymupdf4llm_datas = []
+pymupdf4llm_hiddenimports = []
+try:
+    pymupdf4llm_datas, _, pymupdf4llm_hiddenimports = collect_all('pymupdf4llm')
+except Exception:
+    pass
+
 # EasyOCRのデータファイルを収集
 easyocr_datas = []
 try:
@@ -37,16 +58,17 @@ a = Analysis(
     ['pdf2md.py'],
     pathex=[],
     binaries=fitz_binaries + pymupdf_binaries,
-    datas=fitz_datas + pymupdf_datas + easyocr_datas,
+    datas=fitz_datas + pymupdf_datas + pymupdf4llm_datas + easyocr_datas,
     hiddenimports=[
         'fitz',
         'pymupdf',
+        'pymupdf4llm',
         'PIL',
         'PIL.Image',
         'easyocr',
         'torch',
         'torchvision',
-    ] + fitz_hiddenimports + pymupdf_hiddenimports,
+    ] + fitz_hiddenimports + pymupdf_hiddenimports + pymupdf4llm_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
