@@ -1220,8 +1220,14 @@ class AdvancedPDFConverter:
         if not draw_rects:
             return blocks
 
-        # 描画要素をクラスタリング（空間的に近い要素をグループ化）
-        clusters = self._cluster_drawing_rects(draw_rects, proximity=5)
+        # Change Location-2026/02/16 - Increase clustering proximity for vector drawings
+        # Original Code
+        # clusters = self._cluster_drawing_rects(draw_rects, proximity=5)
+        # Updated Code
+        # proximity=5 was too small: connector pin diagrams etc. fragmented into
+        # many tiny clusters that got filtered out. proximity=10 merges them correctly.
+        clusters = self._cluster_drawing_rects(draw_rects, proximity=10)
+        # Change Location-2026/02/16 - Increase clustering proximity for vector drawings
 
         for cluster_rect, member_indices in clusters:
             cw = cluster_rect.x1 - cluster_rect.x0
@@ -1536,6 +1542,11 @@ class AdvancedPDFConverter:
                 r'!\[([^\]]*)\]\(([^)]*' + re.escape(base_name) + r'[^)]*?-(\d+)-\d+\.png)\)'
             )
 
+            # Change Location-2026/02/16 - Handle multiple vector drawings per page
+            # Original Code
+            # (single image per page: only one replacement or insertion per page)
+            # Updated Code
+
             # ページ番号→pymupdf4llm画像参照のマッピングを作成
             pymupdf4llm_pages = {}
             for m in pymupdf4llm_img_pattern.finditer(md_content):
@@ -1546,15 +1557,29 @@ class AdvancedPDFConverter:
             inserted_count = 0
             files_to_delete = []
 
-            # 重複ページの画像を置換、新規ページの画像を挿入
-            for page_num, img_block in reversed(added_images):
-                img_md = f"\n![図{page_num + 1}]({img_block.image_path})\n"
+            # ページごとにベクター描画をグループ化
+            from collections import defaultdict as _defaultdict
+            page_drawings = _defaultdict(list)
+            for page_num, img_block in added_images:
+                page_drawings[page_num].append(img_block)
+
+            # ページごとに処理（逆順で挿入位置がずれないように）
+            for page_num in sorted(page_drawings.keys(), reverse=True):
+                img_blocks = page_drawings[page_num]
+                # Y座標順にソート（ページ内の正しい位置順）
+                img_blocks.sort(key=lambda b: b.y0)
+
+                # 全画像のMarkdownテキストを生成
+                all_img_md = "\n".join(
+                    f"![図{page_num + 1}]({b.image_path})" for b in img_blocks
+                )
 
                 if page_num in pymupdf4llm_pages:
-                    # pymupdf4llm画像をベクター描画で置換（フルページ版の方が高品質）
+                    # pymupdf4llm画像を全ベクター描画で置換
                     old_ref = pymupdf4llm_pages[page_num]
-                    md_content = md_content.replace(old_ref, f"![図{page_num + 1}]({img_block.image_path})")
+                    md_content = md_content.replace(old_ref, all_img_md)
                     replaced_count += 1
+                    inserted_count += len(img_blocks) - 1
                     # 置換されたpymupdf4llm画像ファイルを削除対象に
                     old_match = re.search(r'\(([^)]+)\)', old_ref)
                     if old_match:
@@ -1565,18 +1590,20 @@ class AdvancedPDFConverter:
                         files_to_delete.append(abs_old_path)
                 elif page_num == 0:
                     # 表紙（ページ1）はMarkdownの先頭に挿入
-                    md_content = img_md.lstrip('\n') + "\n" + md_content
-                    inserted_count += 1
+                    md_content = all_img_md + "\n\n" + md_content
+                    inserted_count += len(img_blocks)
                 else:
                     # 対応するページ番号テキストの前に挿入を試みる
+                    img_md_block = "\n" + all_img_md + "\n"
                     page_marker = f"\n{page_num + 1}\n"
                     idx = md_content.find(page_marker)
                     if idx >= 0:
-                        md_content = md_content[:idx] + img_md + md_content[idx:]
+                        md_content = md_content[:idx] + img_md_block + md_content[idx:]
                     else:
                         # 見つからない場合は末尾に追加
-                        md_content += f"\n<!-- Page {page_num + 1} -->\n{img_md}"
-                    inserted_count += 1
+                        md_content += f"\n<!-- Page {page_num + 1} -->\n{img_md_block}"
+                    inserted_count += len(img_blocks)
+            # Change Location-2026/02/16 - Handle multiple vector drawings per page
 
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(md_content)
