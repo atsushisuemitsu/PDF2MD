@@ -54,11 +54,18 @@ try:
 except Exception:
     pass
 
+# Anthropic SDK（Claude API図表解析）
+anthropic_datas = []
+try:
+    anthropic_datas = collect_data_files('anthropic')
+except Exception:
+    pass
+
 a = Analysis(
     ['pdf2md.py'],
     pathex=[],
     binaries=fitz_binaries + pymupdf_binaries,
-    datas=fitz_datas + pymupdf_datas + pymupdf4llm_datas + easyocr_datas,
+    datas=fitz_datas + pymupdf_datas + pymupdf4llm_datas + easyocr_datas + anthropic_datas,
     hiddenimports=[
         'fitz',
         'pymupdf',
@@ -68,6 +75,7 @@ a = Analysis(
         'easyocr',
         'torch',
         'torchvision',
+        'anthropic',
     ] + fitz_hiddenimports + pymupdf_hiddenimports + pymupdf4llm_hiddenimports,
     hookspath=[],
     hooksconfig={},

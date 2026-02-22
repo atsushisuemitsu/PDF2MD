@@ -14,6 +14,9 @@ Pillow>=10.0.0
 # OCR for figure text recognition (optional - requires 64-bit Python with PyTorch)
 # easyocr>=1.7.0
 
+# Optional: Claude API for diagram/flowchart analysis
+anthropic>=0.40.0
+
 # Optional: Drag & Drop support for Windows GUI
 tkinterdnd2>=0.3.0
 

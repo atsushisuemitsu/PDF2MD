@@ -1,18 +1,23 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-PDF to Markdown Converter (Advanced Version v3.0)
-PDFファイルをMarkdown形式に変換するGUIツール
+PDF to Markdown Converter (Layout-Aware Version v4.0)
+PDFファイルをMarkdown形式に変換するGUI/CLIツール
 
 機能:
 - 高精度テキスト抽出（位置情報付き）
 - 高度な表構造認識（罫線なし表も対応）
 - 見出し階層の自動認識
 - リスト構造の階層保持
-- 画像抽出と保存
-- OCRによる図内テキスト認識
+- 画像抽出と保存（サイズ情報保持）
+- OCRによる図内テキスト認識（コントラスト強化・信頼度フィルタ付き）
 - 図表キャプション対応
-- フローチャート・図形のテキスト抽出
+- 段組み（2/3段）自動検出・再現
+- 画像フロート配置（テキストとの横並び）
+- Obsidian互換レイアウト（CSS/HTML埋め込み）
+- ページ画像モード（各ページをPNG出力）
+- argparse CLIインターフェース
+- Windows右クリックメニュー統合
 
 使用ライブラリ: PyMuPDF, Pillow, easyocr/pytesseract
 """
@@ -21,6 +26,9 @@ import os
 import sys
 import re
 import io
+import base64
+import json
+import argparse
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -72,6 +80,14 @@ except ImportError:
     except ImportError:
         pass
 
+# Claude API（図表・フローチャートAI解析）
+CLAUDE_API_AVAILABLE = False
+try:
+    import anthropic
+    CLAUDE_API_AVAILABLE = bool(os.environ.get("ANTHROPIC_API_KEY"))
+except ImportError:
+    pass
+
 # ドラッグ&ドロップ対応（Windows）
 try:
     import tkinterdnd2 as tkdnd
@@ -94,6 +110,8 @@ class TextBlock:
     block_type: str = "text"  # text, heading1-6, list, caption
     indent_level: int = 0
     font_name: str = ""
+    color: int = 0  # テキスト色（RGB整数値）
+    column_index: int = 0  # 段組みでのカラムインデックス
 
 
 @dataclass
@@ -110,6 +128,12 @@ class ImageBlock:
     image_path: str = ""
     caption: str = ""
     figure_number: str = ""
+    width_px: int = 0  # 画像の実ピクセル幅
+    height_px: int = 0  # 画像の実ピクセル高さ
+    display_width: float = 0.0  # PDF上の表示幅（pt）
+    display_height: float = 0.0  # PDF上の表示高さ（pt）
+    claude_analysis: str = ""   # Claude解析結果（MD表/PlantUML）
+    analysis_type: str = ""     # table/flowchart/sequence_diagram/diagram等
 
 
 @dataclass
@@ -134,6 +158,30 @@ class ListItem:
     level: int = 0
     list_type: str = "bullet"  # bullet, numbered
     number: str = ""
+
+
+@dataclass
+class LayoutRegion:
+    """レイアウト領域"""
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    region_type: str = "body"  # header, footer, body, sidebar
+    column_index: int = 0
+    blocks: List = field(default_factory=list)
+
+
+@dataclass
+class PageLayout:
+    """ページレイアウト情報"""
+    page_width: float = 0.0
+    page_height: float = 0.0
+    num_columns: int = 1
+    column_boundaries: List[float] = field(default_factory=list)  # カラム境界のX座標
+    header_y: float = 0.0  # ヘッダー領域の下端Y座標
+    footer_y: float = 0.0  # フッター領域の上端Y座標
+    regions: List[LayoutRegion] = field(default_factory=list)
 
 
 class DocumentAnalyzer:
@@ -585,6 +633,393 @@ class CaptionDetector:
         return "", "", ""
 
 
+class LayoutAnalyzer:
+    """段組み・レイアウト検出クラス"""
+
+    def __init__(self):
+        self.header_ratio = 0.08  # ページ上部8%をヘッダー領域
+        self.footer_ratio = 0.08  # ページ下部8%をフッター領域
+
+    def analyze_page_layout(self, page, text_blocks: List[TextBlock]) -> PageLayout:
+        """ページのレイアウト構造を分析"""
+        page_width = page.rect.width
+        page_height = page.rect.height
+
+        layout = PageLayout(
+            page_width=page_width,
+            page_height=page_height,
+            header_y=page_height * self.header_ratio,
+            footer_y=page_height * (1 - self.footer_ratio),
+        )
+
+        # ボディ領域のテキストブロックのみ使用
+        body_blocks = [
+            b for b in text_blocks
+            if layout.header_y < b.y0 < layout.footer_y
+        ]
+
+        if not body_blocks:
+            layout.num_columns = 1
+            layout.column_boundaries = [0, page_width]
+            return layout
+
+        # カラム数を検出
+        num_cols, boundaries = self._detect_columns(body_blocks, page_width)
+        layout.num_columns = num_cols
+        layout.column_boundaries = boundaries
+
+        # ブロックにカラムインデックスを割り当て
+        self._assign_column_indices(text_blocks, layout)
+
+        return layout
+
+    def _detect_columns(self, blocks: List[TextBlock],
+                        page_width: float) -> Tuple[int, List[float]]:
+        """テキストブロックのX座標分布からカラム数を検出"""
+        if not blocks:
+            return 1, [0, page_width]
+
+        # 各ブロックの中心X座標を収集
+        x_centers = [(b.x0 + b.x1) / 2 for b in blocks]
+        x_starts = [b.x0 for b in blocks]
+
+        # ヒストグラムでX座標分布を分析
+        margin = page_width * 0.1
+        content_width = page_width - 2 * margin
+        bin_width = content_width / 20  # 20分割
+
+        bins = defaultdict(int)
+        for x in x_starts:
+            if margin < x < page_width - margin:
+                bin_idx = int((x - margin) / bin_width)
+                bins[bin_idx] += 1
+
+        if not bins:
+            return 1, [0, page_width]
+
+        # ギャップ（テキストが無い領域）を検出してカラム境界を推定
+        sorted_bins = sorted(bins.keys())
+        if not sorted_bins:
+            return 1, [0, page_width]
+
+        # X座標の開始位置で2つのクラスタに分かれるか確認
+        # ブロックのx0をソートして大きなギャップを探す
+        unique_x0 = sorted(set(round(b.x0, 0) for b in blocks))
+        if len(unique_x0) < 2:
+            return 1, [0, page_width]
+
+        # 隣接するx0間の最大ギャップを探す
+        max_gap = 0
+        gap_pos = 0
+        for i in range(len(unique_x0) - 1):
+            gap = unique_x0[i + 1] - unique_x0[i]
+            if gap > max_gap:
+                max_gap = gap
+                gap_pos = (unique_x0[i] + unique_x0[i + 1]) / 2
+
+        # ギャップがコンテンツ幅の15%以上あれば2段組みと判定
+        if max_gap > content_width * 0.15:
+            # ギャップの左右にそれぞれ十分なブロックがあるか確認
+            left_count = sum(1 for b in blocks if b.x0 < gap_pos)
+            right_count = sum(1 for b in blocks if b.x0 >= gap_pos)
+            total = len(blocks)
+
+            if left_count >= total * 0.2 and right_count >= total * 0.2:
+                # さらに3段組みの可能性をチェック
+                left_blocks = [b for b in blocks if b.x0 < gap_pos]
+                right_blocks = [b for b in blocks if b.x0 >= gap_pos]
+
+                # 右側ブロック内でさらにギャップがあるか
+                right_x0 = sorted(set(round(b.x0, 0) for b in right_blocks))
+                max_gap2 = 0
+                gap_pos2 = 0
+                for i in range(len(right_x0) - 1):
+                    gap2 = right_x0[i + 1] - right_x0[i]
+                    if gap2 > max_gap2:
+                        max_gap2 = gap2
+                        gap_pos2 = (right_x0[i] + right_x0[i + 1]) / 2
+
+                if max_gap2 > content_width * 0.12:
+                    r_left = sum(1 for b in right_blocks if b.x0 < gap_pos2)
+                    r_right = sum(1 for b in right_blocks if b.x0 >= gap_pos2)
+                    if r_left >= len(right_blocks) * 0.2 and r_right >= len(right_blocks) * 0.2:
+                        return 3, [0, gap_pos, gap_pos2, page_width]
+
+                return 2, [0, gap_pos, page_width]
+
+        return 1, [0, page_width]
+
+    def _assign_column_indices(self, blocks: List[TextBlock],
+                               layout: PageLayout) -> None:
+        """ブロックにカラムインデックスを割り当て"""
+        for block in blocks:
+            center_x = (block.x0 + block.x1) / 2
+            col_idx = 0
+            for i in range(len(layout.column_boundaries) - 1):
+                if layout.column_boundaries[i] <= center_x < layout.column_boundaries[i + 1]:
+                    col_idx = i
+                    break
+            block.column_index = col_idx
+
+    def is_header_or_footer(self, block, layout: PageLayout) -> str:
+        """ブロックがヘッダーまたはフッターかを判定"""
+        if block.y0 < layout.header_y:
+            return "header"
+        if block.y1 > layout.footer_y:
+            return "footer"
+        return "body"
+
+
+class ClaudeDiagramAnalyzer:
+    """Claude APIを使用した図表・フローチャート解析クラス"""
+
+    def __init__(self):
+        self.client = anthropic.Anthropic()
+        self.model = "claude-sonnet-4-20250514"
+        self.disabled = False  # 認証エラー時に自動無効化
+
+        # APIキーの有効性を検証
+        try:
+            self.client.messages.create(
+                model=self.model,
+                max_tokens=16,
+                messages=[{"role": "user", "content": "test"}],
+            )
+            print("[Claude API] API key verified successfully")
+        except anthropic.AuthenticationError as e:
+            print(f"[Claude API] ERROR: APIキーが無効です: {e}")
+            print("[Claude API] ANTHROPIC_API_KEY環境変数に正しいキーを設定してください")
+            print("[Claude API] https://console.anthropic.com/ でキーを取得できます")
+            self.disabled = True
+        except Exception:
+            # 認証以外のエラー（レート制限等）はキー自体は有効
+            pass
+
+    def analyze_page(self, page_image_bytes: bytes, page_height: float, page_width: float = 0) -> list:
+        """ページ画像全体から図表・フローチャートを検出・構造化"""
+        if self.disabled:
+            return []
+        try:
+            image_b64 = base64.standard_b64encode(page_image_bytes).decode("utf-8")
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": image_b64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": self._build_page_prompt(),
+                        },
+                    ],
+                }],
+            )
+            return self._parse_page_response(response.content[0].text, page_height)
+        except anthropic.AuthenticationError:
+            print("[Claude API] 認証エラー: 以降のClaude解析を無効化します")
+            self.disabled = True
+            return []
+        except Exception as e:
+            print(f"[Claude API] Page analysis error: {e}")
+            return []
+
+    def analyze_single_image(self, image_bytes: bytes) -> Optional[dict]:
+        """個別画像を解析して図表・フローチャートを構造化"""
+        if self.disabled:
+            return None
+        try:
+            # 画像フォーマット判定
+            media_type = "image/png"
+            if image_bytes[:2] == b'\xff\xd8':
+                media_type = "image/jpeg"
+
+            image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": image_b64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": self._build_image_prompt(),
+                        },
+                    ],
+                }],
+            )
+            return self._parse_image_response(response.content[0].text)
+        except anthropic.AuthenticationError:
+            print("[Claude API] 認証エラー: 以降のClaude解析を無効化します")
+            self.disabled = True
+            return None
+        except Exception as e:
+            print(f"[Claude API] Image analysis error: {e}")
+            return None
+
+    def _build_page_prompt(self) -> str:
+        return """このPDFページの画像を解析し、以下の視覚的要素を全て検出してください:
+- 表（罫線あり・なし両方）
+- フローチャート
+- シーケンス図
+- 状態遷移図
+- 組織図・ツリー図
+- その他の構造図（ブロック図、ネットワーク図等）
+
+【重要】各要素の位置を正確に返してください。
+- y_start_ratio: 要素の上端位置（ページ上端=0.0、下端=1.0）
+- y_end_ratio: 要素の下端位置
+この範囲内のOCRテキストは除去されるため、正確な範囲指定が必須です。
+
+変換ルール:
+- 表 → Markdown表形式（|ヘッダー|...|で記述、セル内テキストを正確に読み取る）
+- フローチャート → PlantUML形式（@startuml/@enduml）
+- シーケンス図 → PlantUML形式
+- 状態遷移図 → PlantUML形式
+- 組織図 → PlantUML形式
+- その他の構造図 → PlantUML形式またはテキスト構造説明
+
+JSON配列で返してください（図表が無い場合は空配列[]）:
+[{
+  "type": "table",
+  "y_start_ratio": 0.30,
+  "y_end_ratio": 0.55,
+  "content": "| ヘッダー1 | ヘッダー2 |\\n|---|---|\\n| セル1 | セル2 |",
+  "caption": "表1 サンプル表"
+}]
+
+typeの値: table, flowchart, sequence_diagram, state_diagram, org_chart, diagram
+
+注意:
+- y_start_ratio/y_end_ratioは図表の外枠全体を包含する範囲にすること
+- キャプション（「図1」「表2」等）も範囲に含める
+- 日本語テキストはそのまま保持
+- 表のセル内テキストは正確に読み取ること
+- 通常のテキスト段落や見出しは検出しない（図表・図形のみ）
+- JSONのみを出力し、他の説明文は含めないでください"""
+
+    def _build_image_prompt(self) -> str:
+        return """この画像を解析してください。
+画像が以下のいずれかに該当する場合、構造化された形式に変換してください:
+- 表 → Markdown表形式
+- フローチャート → PlantUML形式
+- シーケンス図 → PlantUML形式
+- 状態遷移図 → PlantUML形式
+- 組織図 → PlantUML形式
+- その他の図形 → テキストによる構造説明
+
+該当する場合、以下のJSON形式で返してください:
+{"type": "flowchart", "content": "@startuml\\n...\\n@enduml"}
+
+typeの値: table, flowchart, sequence_diagram, state_diagram, org_chart, diagram
+
+写真・イラスト・装飾画像など構造化できない画像の場合はnullを返してください。
+JSONまたはnullのみを出力し、他の説明文は含めないでください"""
+
+    def _parse_page_response(self, text: str, page_height: float) -> list:
+        """ページ解析レスポンスをパース"""
+        text = text.strip()
+        # コードブロックで囲まれている場合を処理
+        if text.startswith("```"):
+            text = re.sub(r'^```(?:json)?\s*', '', text)
+            text = re.sub(r'\s*```$', '', text)
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            # JSON配列部分を抽出
+            match = re.search(r'\[.*\]', text, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group())
+                except json.JSONDecodeError:
+                    return []
+            else:
+                return []
+
+        if not isinstance(data, list):
+            return []
+
+        results = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            elem_type = item.get("type", "diagram")
+            content = item.get("content", "")
+            caption = item.get("caption", "")
+            if not content:
+                continue
+
+            # y_start_ratio / y_end_ratio（新形式）を優先
+            y_start_ratio = item.get("y_start_ratio")
+            y_end_ratio = item.get("y_end_ratio")
+
+            if y_start_ratio is not None and y_end_ratio is not None:
+                y_start = y_start_ratio * page_height
+                y_end = y_end_ratio * page_height
+            else:
+                # 旧形式 y_position_ratio からのフォールバック
+                y_ratio = item.get("y_position_ratio", 0.5)
+                y_start = y_ratio * page_height
+                # 範囲不明のため高さの10%を仮の範囲とする
+                y_end = y_start + page_height * 0.10
+
+            results.append({
+                "type": elem_type,
+                "y_start": y_start,
+                "y_end": y_end,
+                "content": content,
+                "caption": caption,
+            })
+        return results
+
+    def _parse_image_response(self, text: str) -> Optional[dict]:
+        """個別画像解析レスポンスをパース"""
+        text = text.strip()
+        if text.lower() == "null" or not text:
+            return None
+
+        # コードブロックで囲まれている場合を処理
+        if text.startswith("```"):
+            text = re.sub(r'^```(?:json)?\s*', '', text)
+            text = re.sub(r'\s*```$', '', text)
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group())
+                except json.JSONDecodeError:
+                    return None
+            else:
+                return None
+
+        if not isinstance(data, dict) or "content" not in data:
+            return None
+
+        return {
+            "type": data.get("type", "diagram"),
+            "content": data["content"],
+        }
+
+
 class AdvancedPDFConverter:
     """高度なPDF to Markdown変換クラス"""
 
@@ -612,6 +1047,15 @@ class AdvancedPDFConverter:
         self.table_extractor = AdvancedTableExtractor()
         self.list_detector = ListDetector()
         self.caption_detector = CaptionDetector()
+        self.layout_analyzer = LayoutAnalyzer()
+
+        # Claude API図表解析
+        self.claude_analyzer = None
+        if CLAUDE_API_AVAILABLE:
+            try:
+                self.claude_analyzer = ClaudeDiagramAnalyzer()
+            except Exception as e:
+                print(f"Warning: Claude API initialization failed: {e}")
 
     def _check_font_encoding_issue(self, doc) -> bool:
         """PDFのフォントエンコーディング問題をチェック"""
@@ -620,8 +1064,20 @@ class AdvancedPDFConverter:
         for i in range(min(3, len(doc))):
             sample_text += doc[i].get_text()
 
-        if len(sample_text) < 100:
+        if len(sample_text) < 50:
             return False
+
+        # 文字化けパターン検出（連続する置換文字、制御文字）
+        replacement_chars = sum(1 for c in sample_text if c in '\ufffd\x00\x01\x02\x03')
+        if len(sample_text) > 0 and replacement_chars / len(sample_text) > 0.1:
+            print(f"[INFO] Using page-level OCR due to garbled text detected...")
+            return True
+
+        # CID/Identity-Hフォントの文字化け: 同じUnicode Private Use Areaの文字が多い
+        pua_count = sum(1 for c in sample_text if 0xE000 <= ord(c) <= 0xF8FF)
+        if len(sample_text) > 0 and pua_count / len(sample_text) > 0.15:
+            print(f"[INFO] Using page-level OCR due to CID font encoding issues...")
+            return True
 
         # 単一文字の繰り返しが多い場合はエンコーディング問題
         char_counts = {}
@@ -632,14 +1088,15 @@ class AdvancedPDFConverter:
         if char_counts:
             most_common_char = max(char_counts.keys(), key=lambda x: char_counts[x])
             ratio = char_counts[most_common_char] / len(sample_text)
-            # 1文字が30%以上を占める場合は問題あり
-            if ratio > 0.3:
+            # 1文字が25%以上を占める場合は問題あり（閾値を30%→25%に改善）
+            if ratio > 0.25:
                 print(f"[INFO] Using page-level OCR due to font encoding issues...")
                 return True
         return False
 
     def _convert_with_page_ocr(self, doc, output_path: str, base_name: str,
-                                images_dir: str, extract_images: bool) -> Tuple[bool, str]:
+                                images_dir: str, extract_images: bool,
+                                enable_claude: bool = True) -> Tuple[bool, str]:
         """ページ全体をOCRで変換（フォント問題があるPDF用）- レイアウト保持版"""
         import numpy as np
 
@@ -689,18 +1146,41 @@ class AdvancedPDFConverter:
 
                                 # 画像ブロックを記録（Y座標でソート用）
                                 rel_path = f"{base_name}_images/{image_filename}"
+                                disp_w = int(img_rect.width * 1.333)
+                                disp_h = int(img_rect.height * 1.333)
+
+                                # Claude APIで埋め込み画像を解析
+                                img_md = f'\n<img src="{rel_path}" alt="Image {image_count}" width="{disp_w}" height="{disp_h}">\n'
+                                claude_result = None
+                                px_w = base_image.get("width", 0)
+                                px_h = base_image.get("height", 0)
+                                if enable_claude and self.claude_analyzer and px_w > 100 and px_h > 100:
+                                    claude_result = self.claude_analyzer.analyze_single_image(image_bytes)
+                                    if claude_result:
+                                        c_type = claude_result.get("type", "")
+                                        c_content = claude_result.get("content", "")
+                                        print(f"[Claude API] Embedded image p{page_num+1}_img{image_count}: {c_type}")
+                                        if c_type == "table":
+                                            img_md += f"\n{c_content}\n"
+                                        elif c_type in ("flowchart", "sequence_diagram", "state_diagram", "org_chart"):
+                                            img_md += f"\n```plantuml\n{c_content}\n```\n"
+                                        elif c_content:
+                                            img_md += f"\n{c_content}\n"
+
                                 image_blocks.append({
                                     'y': img_rect.y0,
                                     'x': img_rect.x0,
+                                    'y_end': img_rect.y1,
                                     'width': img_rect.width,
                                     'height': img_rect.height,
-                                    'markdown': f"\n![Image {image_count}]({rel_path})\n"
+                                    'markdown': img_md,
+                                    'has_claude': claude_result is not None,
                                 })
                     except Exception as e:
                         pass
 
             # 2. ページを画像としてレンダリングしてOCR
-            pix = page.get_pixmap(dpi=200)  # 高解像度でOCR精度向上
+            pix = page.get_pixmap(dpi=300)  # 高解像度でOCR精度向上
             img = Image.open(io.BytesIO(pix.tobytes("png")))
 
             # スケール係数（OCR座標→PDF座標変換用）
@@ -708,7 +1188,7 @@ class AdvancedPDFConverter:
             scale_y = page_height / img.height
 
             # 大きい場合はリサイズ
-            max_size = 2500
+            max_size = 3500
             resize_ratio = 1.0
             if max(img.size) > max_size:
                 resize_ratio = max_size / max(img.size)
@@ -728,6 +1208,9 @@ class AdvancedPDFConverter:
             for result in results:
                 bbox, text, confidence = result
                 if not text.strip():
+                    continue
+                # 信頼度30%未満のテキストはフィルタ
+                if confidence < 0.3:
                     continue
 
                 # バウンディングボックスからPDF座標を計算
@@ -752,12 +1235,50 @@ class AdvancedPDFConverter:
                     'height': pdf_y1 - pdf_y0
                 })
 
-            # 4. テキストと画像を位置でソートして結合
+            # 3.5. Claude APIで図表・フローチャートを解析
+            claude_elements = []
+            if enable_claude and self.claude_analyzer:
+                print(f"[Claude API] Analyzing page {page_num + 1} for diagrams...")
+                claude_elements = self.claude_analyzer.analyze_page(
+                    pix.tobytes("png"), page_height, page_width
+                )
+                if claude_elements:
+                    print(f"[Claude API] Found {len(claude_elements)} diagram(s) on page {page_num + 1}")
+
+            # 3.6. 図表領域内のOCRテキストを除去（重複防止）
+            # Claude検出領域 + Claude解析済み埋め込み画像の領域を収集
+            exclusion_regions = []
+            for ce in claude_elements:
+                exclusion_regions.append((ce['y_start'], ce['y_end']))
+            for ib in image_blocks:
+                if ib.get('has_claude'):
+                    exclusion_regions.append((ib['y'], ib.get('y_end', ib['y'] + ib['height'])))
+
+            if exclusion_regions:
+                filtered_text_blocks = []
+                for tb in text_blocks:
+                    tb_center_y = (tb['y'] + tb['y1']) / 2
+                    in_excluded = False
+                    for y_start, y_end in exclusion_regions:
+                        if y_start <= tb_center_y <= y_end:
+                            in_excluded = True
+                            break
+                    if not in_excluded:
+                        filtered_text_blocks.append(tb)
+                removed = len(text_blocks) - len(filtered_text_blocks)
+                if removed > 0:
+                    print(f"[Claude API] Removed {removed} OCR text blocks within diagram/image regions")
+                text_blocks = filtered_text_blocks
+
+            # 4. テキストと画像とClaude要素を位置でソートして結合
             all_elements = []
             for tb in text_blocks:
                 all_elements.append(('text', tb['y'], tb['x'], tb))
             for ib in image_blocks:
                 all_elements.append(('image', ib['y'], ib['x'], ib))
+            for ce in claude_elements:
+                # Claude要素はy_startの位置に挿入
+                all_elements.append(('claude', ce['y_start'], 0, ce))
 
             # Y座標でソート、同じY座標ならX座標でソート
             all_elements.sort(key=lambda e: (e[1], e[2]))
@@ -783,6 +1304,21 @@ class AdvancedPDFConverter:
                         line_buffer = []
                         line_y = None
                     md_lines.append(elem['markdown'])
+                elif elem_type == 'claude':
+                    # Claude解析要素（図表・フローチャート等）
+                    if line_buffer:
+                        md_lines.append(' '.join(line_buffer))
+                        line_buffer = []
+                        line_y = None
+                    if elem.get('caption'):
+                        md_lines.append(f"\n**{elem['caption']}**\n")
+                    content = elem['content']
+                    if elem['type'] == 'table':
+                        md_lines.append(f"\n{content}\n")
+                    elif elem['type'] in ('flowchart', 'sequence_diagram', 'state_diagram', 'org_chart'):
+                        md_lines.append(f"\n```plantuml\n{content}\n```\n")
+                    else:
+                        md_lines.append(f"\n{content}\n")
                 else:
                     # テキスト要素
                     text = elem['text']
@@ -867,8 +1403,20 @@ class AdvancedPDFConverter:
         except Exception as e:
             return False, f"PyMuPDF4LLM conversion failed: {e}"
 
+    def _render_page_image(self, page, page_num: int, images_dir: str,
+                           base_name: str, dpi: int = 150) -> str:
+        """ページ全体を高解像度PNGとしてレンダリング"""
+        pix = page.get_pixmap(dpi=dpi)
+        img_filename = f"{base_name}_page{page_num + 1}.png"
+        img_path = os.path.join(images_dir, img_filename)
+        pix.save(img_path)
+        return f"{base_name}_images/{img_filename}"
+
     def convert_file(self, pdf_path: str, output_path: str = None,
-                     extract_images: bool = True) -> Tuple[bool, str]:
+                     extract_images: bool = True,
+                     layout_mode: str = "auto",
+                     dpi: int = 150,
+                     enable_claude: bool = True) -> Tuple[bool, str]:
         """
         PDFファイルをMarkdownに変換
 
@@ -876,6 +1424,9 @@ class AdvancedPDFConverter:
             pdf_path: 入力PDFファイルパス
             output_path: 出力Markdownファイルパス
             extract_images: 画像を抽出するか
+            layout_mode: レイアウトモード (auto/precise/page_image/legacy)
+            dpi: 画像レンダリングDPI
+            enable_claude: Claude APIによる図表解析を有効にするか
 
         Returns:
             (成功フラグ, メッセージまたはエラー内容)
@@ -902,6 +1453,20 @@ class AdvancedPDFConverter:
             if extract_images and not os.path.exists(images_dir):
                 os.makedirs(images_dir)
 
+            # page_imageモード: 各ページをPNG画像として出力
+            if layout_mode == "page_image":
+                return self._convert_as_page_images(
+                    pdf_path, output_path, base_name, images_dir, dpi
+                )
+
+            # legacyモード: pymupdf4llmのみ使用
+            if layout_mode == "legacy":
+                if PYMUPDF4LLM_AVAILABLE:
+                    return self._convert_with_pymupdf4llm(
+                        pdf_path, output_path, images_dir, extract_images
+                    )
+                # pymupdf4llmが使えない場合はフォールスルー
+
             # PDF解析
             doc = fitz.open(pdf_path)
 
@@ -912,13 +1477,13 @@ class AdvancedPDFConverter:
                 # フォント問題がある場合はOCRベースの変換
                 if self.enable_ocr and self.ocr_reader:
                     print("[INFO] Font encoding issues detected, using OCR-based conversion...")
-                    result = self._convert_with_page_ocr(doc, output_path, base_name, images_dir, extract_images)
+                    result = self._convert_with_page_ocr(doc, output_path, base_name, images_dir, extract_images, enable_claude)
                     doc.close()
                     return result
                 else:
                     print("[WARNING] Font encoding issues detected but OCR is not available")
-            else:
-                # フォント問題がない場合はpymupdf4llmを試す
+            elif layout_mode in ("auto", "legacy"):
+                # フォント問題がない場合かつauto/legacyならpymupdf4llmを試す
                 if PYMUPDF4LLM_AVAILABLE:
                     doc_for_drawings = doc  # ベクター描画抽出用に保持
                     result = self._convert_with_pymupdf4llm(pdf_path, output_path, images_dir, extract_images)
@@ -933,10 +1498,14 @@ class AdvancedPDFConverter:
                     print(f"[WARNING] PyMuPDF4LLM failed, falling back to standard conversion: {result[1]}")
                     # doc はまだ開いている
 
+            # preciseモード or autoモードのフォールバック: 精密レイアウト変換
+            use_obsidian_layout = layout_mode in ("precise", "auto")
+
             # 文書構造分析（見出しサイズの推定など）
             self.doc_analyzer.analyze_document_structure(doc)
 
             all_blocks = []
+            page_layouts = {}
 
             for page_num in range(len(doc)):
                 page = doc[page_num]
@@ -949,10 +1518,16 @@ class AdvancedPDFConverter:
                 text_blocks = self._extract_text_blocks(page, page_num, table_regions)
                 all_blocks.extend(text_blocks)
 
+                # レイアウト分析（段組み検出）
+                if use_obsidian_layout:
+                    page_layout = self.layout_analyzer.analyze_page_layout(page, text_blocks)
+                    page_layouts[page_num] = page_layout
+
                 # 画像ブロック抽出（ラスター画像 + ベクター描画領域）
                 if extract_images:
                     image_blocks = self._extract_image_blocks(
-                        page, page_num, images_dir, base_name, table_regions
+                        page, page_num, images_dir, base_name,
+                        table_regions, enable_claude=enable_claude
                     )
                     all_blocks.extend(image_blocks)
 
@@ -969,11 +1544,53 @@ class AdvancedPDFConverter:
             all_blocks = self._sort_blocks_with_columns(all_blocks)
 
             # Markdown生成
-            markdown_content = self._generate_markdown(all_blocks, base_name)
+            if use_obsidian_layout and page_layouts:
+                markdown_content = self._generate_markdown_obsidian(
+                    all_blocks, base_name, page_layouts
+                )
+            else:
+                markdown_content = self._generate_markdown(all_blocks, base_name)
 
             # 保存
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(markdown_content)
+
+            return True, output_path
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return False, str(e)
+
+    def _convert_as_page_images(self, pdf_path: str, output_path: str,
+                                 base_name: str, images_dir: str,
+                                 dpi: int = 150) -> Tuple[bool, str]:
+        """各ページをPNG画像として出力するモード"""
+        try:
+            doc = fitz.open(pdf_path)
+            if not os.path.exists(images_dir):
+                os.makedirs(images_dir)
+
+            md_lines = []
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                print(f"[PAGE_IMAGE] Rendering page {page_num + 1}/{len(doc)}...")
+
+                rel_path = self._render_page_image(
+                    page, page_num, images_dir, base_name, dpi
+                )
+                w = int(page.rect.width * 1.333)
+                h = int(page.rect.height * 1.333)
+
+                if page_num > 0:
+                    md_lines.append("\n---\n")
+                md_lines.append(f"\n<!-- Page {page_num + 1} -->\n")
+                md_lines.append(f'<img src="{rel_path}" alt="Page {page_num + 1}" width="{w}" height="{h}">\n')
+
+            doc.close()
+
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write("\n".join(md_lines))
 
             return True, output_path
 
@@ -1103,7 +1720,8 @@ class AdvancedPDFConverter:
 
     def _extract_image_blocks(self, page, page_num: int,
                               images_dir: str, base_name: str,
-                              table_regions: List[Tuple] = None) -> List[ImageBlock]:
+                              table_regions: List[Tuple] = None,
+                              enable_claude: bool = True) -> List[ImageBlock]:
         """ページから画像ブロックを抽出（ラスター画像 + ベクター描画領域）"""
         blocks = []
         table_regions = table_regions or []
@@ -1111,7 +1729,8 @@ class AdvancedPDFConverter:
 
         # 1. ラスター画像の抽出（従来方式）
         raster_blocks = self._extract_raster_images(
-            page, page_num, images_dir, base_name, img_counter
+            page, page_num, images_dir, base_name, img_counter,
+            enable_claude=enable_claude
         )
         blocks.extend(raster_blocks)
 
@@ -1125,7 +1744,8 @@ class AdvancedPDFConverter:
 
     def _extract_raster_images(self, page, page_num: int,
                                images_dir: str, base_name: str,
-                               img_counter: list) -> List[ImageBlock]:
+                               img_counter: list,
+                               enable_claude: bool = True) -> List[ImageBlock]:
         """ラスター画像（埋め込みビットマップ）を抽出"""
         blocks = []
         image_list = page.get_images(full=True)
@@ -1142,13 +1762,15 @@ class AdvancedPDFConverter:
                 image_bytes = base_image["image"]
                 image_ext = base_image.get("ext", "png")
 
+                # 画像の実ピクセルサイズ
+                px_width = base_image.get("width", 0)
+                px_height = base_image.get("height", 0)
+
                 # 小さすぎる画像はスキップ（アイコンなど）
-                width = base_image.get("width", 0)
-                height = base_image.get("height", 0)
-                if width < 50 or height < 50:
+                if px_width < 50 or px_height < 50:
                     continue
 
-                # 画像の位置を取得
+                # 画像の位置を取得（PDF上の表示サイズ）
                 img_rects = page.get_image_rects(xref)
                 if img_rects:
                     rect = img_rects[0]
@@ -1158,6 +1780,9 @@ class AdvancedPDFConverter:
 
                 img_counter[0] += 1
                 img_idx = img_counter[0]
+
+                display_w = x1 - x0
+                display_h = y1 - y0
 
                 # 画像保存
                 img_filename = f"page{page_num + 1}_img{img_idx}.{image_ext}"
@@ -1171,6 +1796,16 @@ class AdvancedPDFConverter:
                 if self.enable_ocr and self.ocr_reader:
                     ocr_text = self._perform_ocr(image_bytes)
 
+                # Claude APIで個別画像を解析（図表・フローの場合）
+                claude_analysis = ""
+                analysis_type = ""
+                if enable_claude and self.claude_analyzer and px_width > 100 and px_height > 100:
+                    result = self.claude_analyzer.analyze_single_image(image_bytes)
+                    if result:
+                        claude_analysis = result.get("content", "")
+                        analysis_type = result.get("type", "")
+                        print(f"[Claude API] Image p{page_num+1}_img{img_index+1}: detected {analysis_type}")
+
                 blocks.append(ImageBlock(
                     image_data=image_bytes,
                     x0=x0,
@@ -1180,7 +1815,13 @@ class AdvancedPDFConverter:
                     page_num=page_num,
                     image_index=img_idx,
                     ocr_text=ocr_text,
-                    image_path=f"{base_name}_images/{img_filename}"
+                    image_path=f"{base_name}_images/{img_filename}",
+                    width_px=px_width,
+                    height_px=px_height,
+                    display_width=display_w,
+                    display_height=display_h,
+                    claude_analysis=claude_analysis,
+                    analysis_type=analysis_type,
                 ))
 
             except Exception as e:
@@ -1385,8 +2026,8 @@ class AdvancedPDFConverter:
                 import numpy as np
                 image = Image.open(io.BytesIO(image_bytes))
 
-                # 大きな画像はリサイズしてOCRを高速化（最大1500px）
-                max_size = 1500
+                # 大きな画像はリサイズしてOCRを高速化（最大2000px）
+                max_size = 2000
                 if image.width > max_size or image.height > max_size:
                     ratio = min(max_size / image.width, max_size / image.height)
                     new_size = (int(image.width * ratio), int(image.height * ratio))
@@ -1396,10 +2037,19 @@ class AdvancedPDFConverter:
                 if image.mode != 'RGB':
                     image = image.convert('RGB')
 
+                # コントラスト強化前処理
+                try:
+                    from PIL import ImageEnhance
+                    enhancer = ImageEnhance.Contrast(image)
+                    image = enhancer.enhance(1.5)
+                except ImportError:
+                    pass
+
                 # EasyOCRはnumpy arrayを必要とする
                 image_np = np.array(image)
                 results = self.ocr_reader.readtext(image_np)
-                texts = [result[1] for result in results]
+                # 信頼度30%未満のテキストをフィルタ
+                texts = [result[1] for result in results if result[2] >= 0.3]
                 return "\n".join(texts)
 
             elif OCR_ENGINE == "pytesseract":
@@ -1697,6 +2347,171 @@ class AdvancedPDFConverter:
 
         return sorted_blocks
 
+    def _generate_css_header(self) -> str:
+        """Obsidian互換のCSSスタイル定義を生成"""
+        return """<style>
+.pdf-page { margin-bottom: 2em; page-break-after: always; }
+.pdf-columns { display: flex; gap: 1.5em; align-items: flex-start; }
+.pdf-column { flex: 1; min-width: 0; }
+.pdf-float-left { float: left; margin: 0 1em 0.5em 0; }
+.pdf-float-right { float: right; margin: 0 0 0.5em 1em; }
+.pdf-clearfix::after { content: ""; display: table; clear: both; }
+.pdf-header, .pdf-footer { color: #888; font-size: 0.85em; text-align: center; margin: 0.5em 0; }
+</style>
+"""
+
+    def _generate_markdown_obsidian(self, blocks: List, base_name: str,
+                                     page_layouts: Dict[int, PageLayout]) -> str:
+        """Obsidian向けレイアウト保持Markdown生成"""
+        md_lines = [self._generate_css_header()]
+        current_page = -1
+
+        # ページごとにブロックをグループ化
+        pages = defaultdict(list)
+        for block in blocks:
+            pages[block.page_num].append(block)
+
+        for page_num in sorted(pages.keys()):
+            page_blocks = pages[page_num]
+            layout = page_layouts.get(page_num)
+
+            if current_page >= 0:
+                md_lines.append("\n---\n")
+            current_page = page_num
+            md_lines.append(f"\n<!-- Page {page_num + 1} -->\n")
+            md_lines.append(f'<div class="pdf-page">\n')
+
+            if layout and layout.num_columns > 1:
+                md_lines.append(self._format_multicolumn_page(
+                    page_blocks, layout, base_name
+                ))
+            else:
+                md_lines.append(self._format_single_column_page(
+                    page_blocks, layout, base_name
+                ))
+
+            md_lines.append("</div>\n")
+
+        return "\n".join(md_lines)
+
+    def _format_multicolumn_page(self, blocks: List, layout: PageLayout,
+                                  base_name: str) -> str:
+        """段組みページをHTML divで再現"""
+        # ヘッダー/フッターを分離
+        header_blocks = []
+        footer_blocks = []
+        body_blocks = []
+
+        for block in blocks:
+            region = self.layout_analyzer.is_header_or_footer(block, layout)
+            if region == "header":
+                header_blocks.append(block)
+            elif region == "footer":
+                footer_blocks.append(block)
+            else:
+                body_blocks.append(block)
+
+        lines = []
+
+        # ヘッダー
+        if header_blocks:
+            lines.append('<div class="pdf-header">')
+            for b in header_blocks:
+                lines.append(self._render_block_html(b))
+            lines.append("</div>")
+
+        # カラムにブロックを分配
+        columns = defaultdict(list)
+        for block in body_blocks:
+            col_idx = getattr(block, 'column_index', 0)
+            columns[col_idx].append(block)
+
+        lines.append(f'<div class="pdf-columns">')
+        for col_idx in range(layout.num_columns):
+            lines.append(f'<div class="pdf-column">')
+            col_blocks = columns.get(col_idx, [])
+            prev_type = None
+            for block in col_blocks:
+                lines.append(self._render_block_html(block, prev_type))
+                if isinstance(block, TextBlock):
+                    prev_type = block.block_type
+                elif isinstance(block, ImageBlock):
+                    prev_type = "image"
+                elif isinstance(block, TableBlock):
+                    prev_type = "table"
+            lines.append("</div>")
+        lines.append("</div>")
+
+        # フッター
+        if footer_blocks:
+            lines.append('<div class="pdf-footer">')
+            for b in footer_blocks:
+                lines.append(self._render_block_html(b))
+            lines.append("</div>")
+
+        return "\n".join(lines)
+
+    def _format_single_column_page(self, blocks: List, layout: Optional[PageLayout],
+                                    base_name: str) -> str:
+        """単一カラムページ：画像とテキストの横並び（フロート）を検出"""
+        lines = []
+        prev_type = None
+        i = 0
+
+        while i < len(blocks):
+            block = blocks[i]
+
+            # 画像とテキストの横並び検出
+            if isinstance(block, ImageBlock) and i + 1 < len(blocks):
+                next_block = blocks[i + 1]
+                if isinstance(next_block, TextBlock):
+                    # Y座標が近く、X座標が離れている → 横並び
+                    y_overlap = (min(block.y1, next_block.y1) - max(block.y0, next_block.y0))
+                    block_height = max(block.y1 - block.y0, 1)
+                    if y_overlap > block_height * 0.3:
+                        # フロート配置
+                        if block.x0 < next_block.x0:
+                            # 画像が左、テキストが右
+                            lines.append(f'<div class="pdf-clearfix">')
+                            lines.append(self._render_block_html(block, float_dir="left"))
+                            lines.append(self._render_block_html(next_block))
+                            lines.append("</div>")
+                        else:
+                            # テキストが左、画像が右
+                            lines.append(f'<div class="pdf-clearfix">')
+                            lines.append(self._render_block_html(block, float_dir="right"))
+                            lines.append(self._render_block_html(next_block))
+                            lines.append("</div>")
+                        prev_type = "float"
+                        i += 2
+                        continue
+
+            lines.append(self._render_block_html(block, prev_type))
+            if isinstance(block, TextBlock):
+                prev_type = block.block_type
+            elif isinstance(block, ImageBlock):
+                prev_type = "image"
+            elif isinstance(block, TableBlock):
+                prev_type = "table"
+            i += 1
+
+        return "\n".join(lines)
+
+    def _render_block_html(self, block, prev_type=None, float_dir=None) -> str:
+        """ブロックをHTML/Markdown文字列にレンダリング"""
+        if isinstance(block, TextBlock):
+            return self._format_text_block(block, prev_type)
+        elif isinstance(block, ImageBlock):
+            img_html = self._format_image_block(block, use_html=True)
+            if float_dir == "left":
+                return f'<div class="pdf-float-left">{img_html}</div>'
+            elif float_dir == "right":
+                return f'<div class="pdf-float-right">{img_html}</div>'
+            return img_html
+        elif isinstance(block, TableBlock):
+            return self._format_table_block(block)
+        return ""
+
     def _generate_markdown(self, blocks: List, base_name: str) -> str:
         """ブロックからMarkdownを生成"""
         md_lines = []
@@ -1778,7 +2593,7 @@ class AdvancedPDFConverter:
 
         return "\n".join(formatted_lines) + "\n"
 
-    def _format_image_block(self, block: ImageBlock) -> str:
+    def _format_image_block(self, block: ImageBlock, use_html: bool = False) -> str:
         """画像ブロックをMarkdown形式に変換"""
         # 図番号とキャプション
         if block.figure_number:
@@ -1788,14 +2603,34 @@ class AdvancedPDFConverter:
         else:
             alt_text = f"図{block.page_num + 1}-{block.image_index + 1}"
 
-        md = f"\n![{alt_text}]({block.image_path})\n"
+        # サイズ指定付きHTML imgタグ or Markdown
+        if use_html and block.display_width > 0:
+            # PDF上の表示サイズをpx換算（72dpi基準: 1pt ≈ 1.333px）
+            w = int(block.display_width * 1.333)
+            h = int(block.display_height * 1.333)
+            md = f'\n<img src="{block.image_path}" alt="{alt_text}" width="{w}" height="{h}">\n'
+        elif block.display_width > 0:
+            # Obsidian互換: width指定付きHTML
+            w = int(block.display_width * 1.333)
+            h = int(block.display_height * 1.333)
+            md = f'\n<img src="{block.image_path}" alt="{alt_text}" width="{w}" height="{h}">\n'
+        else:
+            md = f"\n![{alt_text}]({block.image_path})\n"
 
         # キャプション（図の下に追加）
         if block.caption and block.figure_number:
             md += f"\n*図{block.figure_number}: {block.caption}*\n"
 
-        # OCRテキストがあれば追加
-        if block.ocr_text:
+        # Claude解析結果がある場合、構造化出力を追加
+        if block.claude_analysis:
+            if block.analysis_type == "table":
+                md += f"\n{block.claude_analysis}\n"
+            elif block.analysis_type in ("flowchart", "sequence_diagram", "state_diagram", "org_chart"):
+                md += f"\n```plantuml\n{block.claude_analysis}\n```\n"
+            else:
+                md += f"\n{block.claude_analysis}\n"
+        # OCRテキストがあれば追加（Claude解析がない場合のみ）
+        elif block.ocr_text:
             ocr_lines = block.ocr_text.strip().split('\n')
             if ocr_lines:
                 md += "\n<details>\n<summary>図内テキスト（OCR）</summary>\n\n"
@@ -1864,9 +2699,9 @@ class PDF2MDGUI:
         else:
             self.root = tk.Tk()
 
-        self.root.title("PDF to Markdown Converter v3.0 (Advanced)")
-        self.root.geometry("750x550")
-        self.root.minsize(650, 450)
+        self.root.title("PDF to Markdown Converter v4.0 (Layout-Aware)")
+        self.root.geometry("750x620")
+        self.root.minsize(650, 520)
 
         # 変換エンジン
         self.converter = AdvancedPDFConverter(enable_ocr=True)
@@ -1893,13 +2728,14 @@ class PDF2MDGUI:
         main_frame.rowconfigure(2, weight=1)
 
         # タイトル
-        title_label = ttk.Label(main_frame, text="PDF to Markdown Converter v3.0",
+        title_label = ttk.Label(main_frame, text="PDF to Markdown Converter v4.0",
                                font=("", 16, "bold"))
         title_label.grid(row=0, column=0, pady=(0, 10))
 
         # 機能ステータス表示
         status_text = f"PyMuPDF: {'✓' if PYMUPDF_AVAILABLE else '✗'} | "
-        status_text += f"OCR: {'✓ ' + OCR_ENGINE if OCR_ENGINE else '✗'}"
+        status_text += f"OCR: {'✓ ' + OCR_ENGINE if OCR_ENGINE else '✗'} | "
+        status_text += f"Claude: {'✓' if CLAUDE_API_AVAILABLE else '✗'}"
         status_label = ttk.Label(main_frame, text=status_text, foreground="gray")
         status_label.grid(row=0, column=0, sticky="e")
 
@@ -1963,9 +2799,30 @@ class PDF2MDGUI:
         if OCR_ENGINE is None:
             ocr_cb.configure(state="disabled")
 
+        self.enable_claude_var = tk.BooleanVar(value=CLAUDE_API_AVAILABLE)
+        claude_cb = ttk.Checkbutton(option_frame, text="Claude AI図表解析",
+                                   variable=self.enable_claude_var)
+        claude_cb.pack(side="left", padx=5)
+        if not CLAUDE_API_AVAILABLE:
+            claude_cb.configure(state="disabled")
+
+        # レイアウトモード選択フレーム
+        layout_frame = ttk.LabelFrame(main_frame, text="レイアウトモード", padding="5")
+        layout_frame.grid(row=4, column=0, sticky="ew", pady=5)
+
+        self.layout_mode_var = tk.StringVar(value="auto")
+        ttk.Radiobutton(layout_frame, text="自動",
+                       variable=self.layout_mode_var, value="auto").pack(side="left", padx=5)
+        ttk.Radiobutton(layout_frame, text="精密（段組み・フロート対応）",
+                       variable=self.layout_mode_var, value="precise").pack(side="left", padx=5)
+        ttk.Radiobutton(layout_frame, text="ページ画像",
+                       variable=self.layout_mode_var, value="page_image").pack(side="left", padx=5)
+        ttk.Radiobutton(layout_frame, text="従来",
+                       variable=self.layout_mode_var, value="legacy").pack(side="left", padx=5)
+
         # 出力設定フレーム
         output_frame = ttk.LabelFrame(main_frame, text="出力設定", padding="5")
-        output_frame.grid(row=4, column=0, sticky="ew", pady=5)
+        output_frame.grid(row=5, column=0, sticky="ew", pady=5)
         output_frame.columnconfigure(1, weight=1)
 
         self.output_var = tk.StringVar(value="same")
@@ -1984,12 +2841,12 @@ class PDF2MDGUI:
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(main_frame, variable=self.progress_var,
                                             maximum=100)
-        self.progress_bar.grid(row=5, column=0, sticky="ew", pady=5)
+        self.progress_bar.grid(row=6, column=0, sticky="ew", pady=5)
 
         # ステータスラベル
         self.status_var = tk.StringVar(value="準備完了")
         status_label = ttk.Label(main_frame, textvariable=self.status_var)
-        status_label.grid(row=6, column=0, sticky="w")
+        status_label.grid(row=7, column=0, sticky="w")
 
     def _setup_dnd(self):
         """ドラッグ&ドロップ設定"""
@@ -2077,6 +2934,8 @@ class PDF2MDGUI:
         # 変換オプション更新
         self.converter.enable_ocr = self.enable_ocr_var.get() and OCR_ENGINE is not None
         extract_images = self.extract_images_var.get()
+        layout_mode = self.layout_mode_var.get()
+        enable_claude = self.enable_claude_var.get()
 
         for i, filepath in enumerate(self.file_list):
             # UI更新
@@ -2098,7 +2957,8 @@ class PDF2MDGUI:
 
             # 変換実行
             success, message = self.converter.convert_file(
-                filepath, out_path, extract_images=extract_images
+                filepath, out_path, extract_images=extract_images,
+                layout_mode=layout_mode, enable_claude=enable_claude
             )
 
             if success:
@@ -2125,57 +2985,138 @@ class PDF2MDGUI:
 
 def main():
     """メイン関数"""
-    # コマンドライン引数がある場合はCLIモード
-    if len(sys.argv) > 1:
-        converter = AdvancedPDFConverter(enable_ocr=True)
-        has_error = False
-        converted_count = 0
+    parser = argparse.ArgumentParser(
+        description="PDF to Markdown Converter v4.0",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+例:
+  pdf2md.py                          GUIモードで起動
+  pdf2md.py document.pdf             PDFをMarkdownに変換
+  pdf2md.py --layout precise doc.pdf 精密レイアウトモードで変換
+  pdf2md.py --layout page_image doc.pdf ページ画像モードで変換
+  pdf2md.py --ocr document.pdf       OCR有効で変換
+  pdf2md.py --no-images document.pdf 画像抽出なしで変換
+  pdf2md.py ./pdf_folder/            フォルダ内のPDFを一括変換
+"""
+    )
+    parser.add_argument("inputs", nargs="*", help="PDFファイルまたはフォルダのパス")
+    parser.add_argument("--layout", choices=["auto", "precise", "page_image", "legacy"],
+                       default="auto", help="レイアウトモード (default: auto)")
+    parser.add_argument("--dpi", type=int, default=150,
+                       help="画像レンダリングDPI (default: 150)")
+    parser.add_argument("-o", "--output", help="出力先フォルダ")
+    parser.add_argument("--ocr", action="store_true", default=True,
+                       help="OCRを有効にする (default: True)")
+    parser.add_argument("--no-ocr", action="store_true",
+                       help="OCRを無効にする")
+    parser.add_argument("--no-images", action="store_true",
+                       help="画像抽出を無効にする")
+    parser.add_argument("--no-claude", action="store_true",
+                       help="Claude APIによる図表解析を無効にする")
+    parser.add_argument("--context-menu", action="store_true",
+                       help="右クリックメニューからの呼び出し用")
+    parser.add_argument("--silent", action="store_true",
+                       help="変換完了後のダイアログを抑制")
 
-        for arg in sys.argv[1:]:
-            if os.path.isfile(arg) and arg.lower().endswith('.pdf'):
-                print(f"Converting: {arg}")
-                success, result = converter.convert_file(arg)
-                if success:
-                    print(f"  -> {result}")
-                    converted_count += 1
-                else:
-                    print(f"  Error: {result}")
-                    has_error = True
-            elif os.path.isdir(arg):
-                print(f"Converting folder: {arg}")
-                for pdf_path in Path(arg).glob('*.pdf'):
-                    print(f"  Converting: {pdf_path.name}")
-                    success, result = converter.convert_file(str(pdf_path))
-                    if success:
-                        print(f"    OK")
-                        converted_count += 1
-                    else:
-                        print(f"    Error: {result}")
-                        has_error = True
-
-        # Change Location-2026/02/16 - CLI completion message for context menu launches
-        # Original Code
-        # (no completion message)
-        # Updated Code
-        print()
-        if has_error:
-            print(f"変換完了（{converted_count}件成功、エラーあり）")
-            print("Press any key to close...")
-            try:
-                import msvcrt
-                msvcrt.getch()
-            except (ImportError, OSError):
-                input()
-        else:
-            print(f"変換完了（{converted_count}件成功）")
-            print("3秒後に自動で閉じます...")
-            import time
-            time.sleep(3)
-        # Change Location-2026/02/16 - CLI completion message for context menu launches
-    else:
-        # GUIモード
+    # 引数がない場合はGUIモード
+    if len(sys.argv) == 1:
         app = PDF2MDGUI()
         app.run()
+        return
+
+    args = parser.parse_args()
+
+    # 右クリックメニューからの呼び出し
+    if args.context_menu:
+        _run_context_menu_mode(args)
+        return
+
+    # 入力がない場合はGUI起動
+    if not args.inputs:
+        app = PDF2MDGUI()
+        app.run()
+        return
+
+    # CLIモード
+    enable_ocr = not args.no_ocr
+    extract_images = not args.no_images
+    enable_claude = not args.no_claude
+    converter = AdvancedPDFConverter(enable_ocr=enable_ocr)
+
+    for input_path in args.inputs:
+        if os.path.isfile(input_path) and input_path.lower().endswith('.pdf'):
+            print(f"Converting: {input_path}")
+            out_path = None
+            if args.output:
+                os.makedirs(args.output, exist_ok=True)
+                out_path = os.path.join(
+                    args.output,
+                    os.path.splitext(os.path.basename(input_path))[0] + '.md'
+                )
+            success, result = converter.convert_file(
+                input_path, out_path,
+                extract_images=extract_images,
+                layout_mode=args.layout,
+                dpi=args.dpi,
+                enable_claude=enable_claude,
+            )
+            if success:
+                print(f"  -> {result}")
+            else:
+                print(f"  Error: {result}")
+        elif os.path.isdir(input_path):
+            print(f"Converting folder: {input_path}")
+            for pdf_path in Path(input_path).glob('*.pdf'):
+                print(f"  Converting: {pdf_path.name}")
+                out_path = None
+                if args.output:
+                    os.makedirs(args.output, exist_ok=True)
+                    out_path = os.path.join(
+                        args.output,
+                        os.path.splitext(pdf_path.name)[0] + '.md'
+                    )
+                success, result = converter.convert_file(
+                    str(pdf_path), out_path,
+                    extract_images=extract_images,
+                    layout_mode=args.layout,
+                    dpi=args.dpi,
+                    enable_claude=enable_claude,
+                )
+                status = "OK" if success else f"Error: {result}"
+                print(f"    {status}")
+        else:
+            print(f"  Skipping (not a PDF or folder): {input_path}")
+
+
+def _run_context_menu_mode(args):
+    """右クリックメニューからの変換実行"""
+    if not args.inputs:
+        return
+
+    pdf_path = args.inputs[0]
+    if not os.path.isfile(pdf_path) or not pdf_path.lower().endswith('.pdf'):
+        if not args.silent:
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("エラー", f"PDFファイルではありません:\n{pdf_path}")
+            root.destroy()
+        return
+
+    converter = AdvancedPDFConverter(enable_ocr=True)
+    success, result = converter.convert_file(
+        pdf_path, layout_mode=args.layout, dpi=args.dpi
+    )
+
+    if not args.silent:
+        root = tk.Tk()
+        root.withdraw()
+        if success:
+            messagebox.showinfo("PDF2MD 変換完了",
+                              f"変換が完了しました\n\n入力: {os.path.basename(pdf_path)}\n出力: {result}")
+        else:
+            messagebox.showerror("PDF2MD 変換エラー",
+                               f"変換に失敗しました\n\n{result}")
+        root.destroy()
 
 
 if __name__ == "__main__":
