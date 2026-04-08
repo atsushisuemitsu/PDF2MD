@@ -38,6 +38,18 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Any, Union
 from collections import defaultdict
 
+# .envファイルから環境変数を読み込み
+try:
+    from dotenv import load_dotenv
+    # スクリプトと同じディレクトリの.envを読み込み
+    _env_path = Path(__file__).resolve().parent / '.env'
+    if _env_path.exists():
+        load_dotenv(_env_path)
+    else:
+        load_dotenv()  # カレントディレクトリの.envを試行
+except ImportError:
+    pass
+
 # PyMuPDF
 try:
     import fitz  # PyMuPDF
