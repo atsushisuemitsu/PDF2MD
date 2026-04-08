@@ -88,6 +88,14 @@ try:
 except ImportError:
     pass
 
+# MarkItDown（Microsoft製PDF/ドキュメント変換）
+MARKITDOWN_AVAILABLE = False
+try:
+    from markitdown import MarkItDown as _MarkItDown
+    MARKITDOWN_AVAILABLE = True
+except ImportError:
+    pass
+
 # ドラッグ&ドロップ対応（Windows）
 try:
     import tkinterdnd2 as tkdnd
@@ -879,6 +887,7 @@ class ClaudeDiagramAnalyzer:
 - シーケンス図
 - 状態遷移図
 - 組織図・ツリー図
+- タイミングチャート（信号波形図、タイミングダイアグラム）
 - その他の構造図（ブロック図、ネットワーク図等）
 
 【重要】各要素の位置を正確に返してください。
@@ -892,6 +901,7 @@ class ClaudeDiagramAnalyzer:
 - シーケンス図 → PlantUML形式
 - 状態遷移図 → PlantUML形式
 - 組織図 → PlantUML形式
+- タイミングチャート → WaveDrom JSON形式（{ signal: [...] }）
 - その他の構造図 → PlantUML形式またはテキスト構造説明
 
 JSON配列で返してください（図表が無い場合は空配列[]）:
@@ -903,7 +913,10 @@ JSON配列で返してください（図表が無い場合は空配列[]）:
   "caption": "表1 サンプル表"
 }]
 
-typeの値: table, flowchart, sequence_diagram, state_diagram, org_chart, diagram
+typeの値: table, flowchart, sequence_diagram, state_diagram, org_chart, timing_chart, diagram
+
+タイミングチャートのcontentの例:
+{ "signal": [{"name": "CLK", "wave": "p......."}, {"name": "DATA", "wave": "x.345x.."}, {"name": "EN", "wave": "01.0...."}] }
 
 注意:
 - y_start_ratio/y_end_ratioは図表の外枠全体を包含する範囲にすること
@@ -917,16 +930,20 @@ typeの値: table, flowchart, sequence_diagram, state_diagram, org_chart, diagra
         return """この画像を解析してください。
 画像が以下のいずれかに該当する場合、構造化された形式に変換してください:
 - 表 → Markdown表形式
-- フローチャート → PlantUML形式
+- フローチャート → PlantUML形式（@startuml/@enduml で囲む）
 - シーケンス図 → PlantUML形式
 - 状態遷移図 → PlantUML形式
 - 組織図 → PlantUML形式
-- その他の図形 → テキストによる構造説明
+- タイミングチャート（信号波形図） → WaveDrom JSON形式
+- その他の図形 → PlantUML形式またはテキストによる構造説明
 
 該当する場合、以下のJSON形式で返してください:
 {"type": "flowchart", "content": "@startuml\\n...\\n@enduml"}
 
-typeの値: table, flowchart, sequence_diagram, state_diagram, org_chart, diagram
+タイミングチャートの場合:
+{"type": "timing_chart", "content": "{ \\"signal\\": [{\\"name\\": \\"CLK\\", \\"wave\\": \\"p.......\\"}] }"}
+
+typeの値: table, flowchart, sequence_diagram, state_diagram, org_chart, timing_chart, diagram
 
 写真・イラスト・装飾画像など構造化できない画像の場合はnullを返してください。
 JSONまたはnullのみを出力し、他の説明文は含めないでください"""
@@ -1162,7 +1179,9 @@ class AdvancedPDFConverter:
                                         print(f"[Claude API] Embedded image p{page_num+1}_img{image_count}: {c_type}")
                                         if c_type == "table":
                                             img_md += f"\n{c_content}\n"
-                                        elif c_type in ("flowchart", "sequence_diagram", "state_diagram", "org_chart"):
+                                        elif c_type == "timing_chart":
+                                            img_md += f"\n```wavedrom\n{c_content}\n```\n"
+                                        elif c_type in ("flowchart", "sequence_diagram", "state_diagram", "org_chart", "diagram"):
                                             img_md += f"\n```plantuml\n{c_content}\n```\n"
                                         elif c_content:
                                             img_md += f"\n{c_content}\n"
@@ -1315,7 +1334,9 @@ class AdvancedPDFConverter:
                     content = elem['content']
                     if elem['type'] == 'table':
                         md_lines.append(f"\n{content}\n")
-                    elif elem['type'] in ('flowchart', 'sequence_diagram', 'state_diagram', 'org_chart'):
+                    elif elem['type'] == 'timing_chart':
+                        md_lines.append(f"\n```wavedrom\n{content}\n```\n")
+                    elif elem['type'] in ('flowchart', 'sequence_diagram', 'state_diagram', 'org_chart', 'diagram'):
                         md_lines.append(f"\n```plantuml\n{content}\n```\n")
                     else:
                         md_lines.append(f"\n{content}\n")
@@ -1403,6 +1424,125 @@ class AdvancedPDFConverter:
         except Exception as e:
             return False, f"PyMuPDF4LLM conversion failed: {e}"
 
+    def _convert_with_markitdown(self, pdf_path: str, output_path: str,
+                                  images_dir: str, extract_images: bool) -> Tuple[bool, str]:
+        """MarkItDown（Microsoft製）を使用した変換"""
+        if not MARKITDOWN_AVAILABLE:
+            return False, "markitdown is not available. Install: pip install 'markitdown[pdf]'"
+
+        try:
+            print("[INFO] Converting with MarkItDown...")
+
+            md_engine = _MarkItDown()
+            result = md_engine.convert(pdf_path)
+            md_content = result.markdown
+
+            if not md_content or not md_content.strip():
+                return False, "MarkItDown returned empty content"
+
+            # MarkItDownはテキスト/表のみ抽出。画像抽出が必要な場合はPyMuPDFで補完
+            if extract_images and PYMUPDF_AVAILABLE:
+                doc = fitz.open(pdf_path)
+                base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+                if not os.path.exists(images_dir):
+                    os.makedirs(images_dir)
+
+                img_counter = [0]
+                diagram_sections = []  # PlantUML/WaveDrom図
+                image_references = []  # 通常の画像参照
+
+                for page_num in range(len(doc)):
+                    page = doc[page_num]
+                    all_image_blocks = []
+
+                    # ラスター画像抽出
+                    raster_blocks = self._extract_raster_images(
+                        page, page_num, images_dir, base_name,
+                        img_counter, enable_claude=False
+                    )
+                    all_image_blocks.extend(raster_blocks)
+
+                    # ベクター描画抽出
+                    drawing_blocks = self._extract_drawing_blocks(
+                        page, page_num, images_dir, base_name, [],
+                        img_counter
+                    )
+                    all_image_blocks.extend(drawing_blocks)
+
+                    # 各画像をClaude APIで解析（有効時）
+                    for img_block in all_image_blocks:
+                        rel_path = f"{base_name}_images/{os.path.basename(img_block.image_path)}"
+                        diagram_result = None
+
+                        if enable_claude and self.claude_analyzer and not self.claude_analyzer.disabled:
+                            try:
+                                with open(img_block.image_path, 'rb') as f:
+                                    img_bytes = f.read()
+                                diagram_result = self.claude_analyzer.analyze_single_image(img_bytes)
+                            except Exception as e:
+                                print(f"[Claude API] Image analysis skipped: {e}")
+
+                        if diagram_result and diagram_result.get("content"):
+                            d_type = diagram_result.get("type", "diagram")
+                            d_content = diagram_result["content"]
+                            caption = diagram_result.get("caption", "")
+
+                            if d_type == "timing_chart":
+                                # WaveDrom JSON形式
+                                section = f"\n<!-- Page {page_num + 1} -->\n"
+                                if caption:
+                                    section += f"**{caption}**\n\n"
+                                section += f"```wavedrom\n{d_content}\n```\n"
+                                section += f"\n*Original: [{os.path.basename(img_block.image_path)}]({rel_path})*\n"
+                                diagram_sections.append(section)
+                            elif d_type in ("flowchart", "sequence_diagram", "state_diagram", "org_chart", "diagram"):
+                                # PlantUML形式
+                                section = f"\n<!-- Page {page_num + 1} -->\n"
+                                if caption:
+                                    section += f"**{caption}**\n\n"
+                                section += f"```plantuml\n{d_content}\n```\n"
+                                section += f"\n*Original: [{os.path.basename(img_block.image_path)}]({rel_path})*\n"
+                                diagram_sections.append(section)
+                            elif d_type == "table":
+                                # Markdown表
+                                section = f"\n<!-- Page {page_num + 1} -->\n"
+                                if caption:
+                                    section += f"**{caption}**\n\n"
+                                section += d_content + "\n"
+                                diagram_sections.append(section)
+                            else:
+                                # 不明な型は画像として出力
+                                image_references.append(
+                                    f"\n![page{page_num + 1}]({rel_path})\n"
+                                )
+                        else:
+                            # Claude解析なし or 構造化不可の画像 → 画像参照
+                            image_references.append(
+                                f"\n![page{page_num + 1}]({rel_path})\n"
+                            )
+
+                doc.close()
+
+                # 図（PlantUML/WaveDrom）をMarkdownに挿入
+                if diagram_sections:
+                    md_content += "\n\n## Diagrams\n"
+                    md_content += "\n".join(diagram_sections)
+
+                # 通常画像をMarkdownに挿入
+                if image_references:
+                    md_content += "\n\n## Images\n"
+                    md_content += "\n".join(image_references)
+
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(md_content)
+
+            return True, output_path
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return False, f"MarkItDown conversion failed: {e}"
+
     def _render_page_image(self, page, page_num: int, images_dir: str,
                            base_name: str, dpi: int = 150) -> str:
         """ページ全体を高解像度PNGとしてレンダリング"""
@@ -1457,6 +1597,12 @@ class AdvancedPDFConverter:
             if layout_mode == "page_image":
                 return self._convert_as_page_images(
                     pdf_path, output_path, base_name, images_dir, dpi
+                )
+
+            # markitdownモード: MarkItDown（Microsoft製）を使用
+            if layout_mode == "markitdown":
+                return self._convert_with_markitdown(
+                    pdf_path, output_path, images_dir, extract_images
                 )
 
             # legacyモード: pymupdf4llmのみ使用
@@ -2625,7 +2771,9 @@ class AdvancedPDFConverter:
         if block.claude_analysis:
             if block.analysis_type == "table":
                 md += f"\n{block.claude_analysis}\n"
-            elif block.analysis_type in ("flowchart", "sequence_diagram", "state_diagram", "org_chart"):
+            elif block.analysis_type == "timing_chart":
+                md += f"\n```wavedrom\n{block.claude_analysis}\n```\n"
+            elif block.analysis_type in ("flowchart", "sequence_diagram", "state_diagram", "org_chart", "diagram"):
                 md += f"\n```plantuml\n{block.claude_analysis}\n```\n"
             else:
                 md += f"\n{block.claude_analysis}\n"
@@ -2735,7 +2883,8 @@ class PDF2MDGUI:
         # 機能ステータス表示
         status_text = f"PyMuPDF: {'✓' if PYMUPDF_AVAILABLE else '✗'} | "
         status_text += f"OCR: {'✓ ' + OCR_ENGINE if OCR_ENGINE else '✗'} | "
-        status_text += f"Claude: {'✓' if CLAUDE_API_AVAILABLE else '✗'}"
+        status_text += f"Claude: {'✓' if CLAUDE_API_AVAILABLE else '✗'} | "
+        status_text += f"MarkItDown: {'✓' if MARKITDOWN_AVAILABLE else '✗'}"
         status_label = ttk.Label(main_frame, text=status_text, foreground="gray")
         status_label.grid(row=0, column=0, sticky="e")
 
@@ -2819,6 +2968,11 @@ class PDF2MDGUI:
                        variable=self.layout_mode_var, value="page_image").pack(side="left", padx=5)
         ttk.Radiobutton(layout_frame, text="従来",
                        variable=self.layout_mode_var, value="legacy").pack(side="left", padx=5)
+        mid_rb = ttk.Radiobutton(layout_frame, text="MarkItDown",
+                       variable=self.layout_mode_var, value="markitdown")
+        mid_rb.pack(side="left", padx=5)
+        if not MARKITDOWN_AVAILABLE:
+            mid_rb.configure(state="disabled")
 
         # 出力設定フレーム
         output_frame = ttk.LabelFrame(main_frame, text="出力設定", padding="5")
@@ -2994,13 +3148,14 @@ def main():
   pdf2md.py document.pdf             PDFをMarkdownに変換
   pdf2md.py --layout precise doc.pdf 精密レイアウトモードで変換
   pdf2md.py --layout page_image doc.pdf ページ画像モードで変換
+  pdf2md.py --layout markitdown doc.pdf MarkItDownで変換
   pdf2md.py --ocr document.pdf       OCR有効で変換
   pdf2md.py --no-images document.pdf 画像抽出なしで変換
   pdf2md.py ./pdf_folder/            フォルダ内のPDFを一括変換
 """
     )
     parser.add_argument("inputs", nargs="*", help="PDFファイルまたはフォルダのパス")
-    parser.add_argument("--layout", choices=["auto", "precise", "page_image", "legacy"],
+    parser.add_argument("--layout", choices=["auto", "precise", "page_image", "legacy", "markitdown"],
                        default="auto", help="レイアウトモード (default: auto)")
     parser.add_argument("--dpi", type=int, default=150,
                        help="画像レンダリングDPI (default: 150)")

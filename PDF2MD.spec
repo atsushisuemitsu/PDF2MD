@@ -61,11 +61,39 @@ try:
 except Exception:
     pass
 
+# MarkItDown（Microsoft製PDF変換）
+markitdown_datas = []
+markitdown_hiddenimports = []
+try:
+    markitdown_datas, _, markitdown_hiddenimports = collect_all('markitdown')
+except Exception:
+    pass
+
+# pdfplumber / pdfminer（MarkItDown依存）
+pdfplumber_datas = []
+pdfminer_datas = []
+try:
+    pdfplumber_datas = collect_data_files('pdfplumber')
+except Exception:
+    pass
+try:
+    pdfminer_datas = collect_data_files('pdfminer')
+except Exception:
+    pass
+
+# magika（MarkItDown依存 - ファイルタイプ検出）
+magika_datas = []
+magika_hiddenimports = []
+try:
+    magika_datas, _, magika_hiddenimports = collect_all('magika')
+except Exception:
+    pass
+
 a = Analysis(
     ['pdf2md.py'],
     pathex=[],
     binaries=fitz_binaries + pymupdf_binaries,
-    datas=fitz_datas + pymupdf_datas + pymupdf4llm_datas + easyocr_datas + anthropic_datas,
+    datas=fitz_datas + pymupdf_datas + pymupdf4llm_datas + easyocr_datas + anthropic_datas + markitdown_datas + pdfplumber_datas + pdfminer_datas + magika_datas,
     hiddenimports=[
         'fitz',
         'pymupdf',
@@ -76,7 +104,20 @@ a = Analysis(
         'torch',
         'torchvision',
         'anthropic',
-    ] + fitz_hiddenimports + pymupdf_hiddenimports + pymupdf4llm_hiddenimports,
+        'markitdown',
+        'markitdown.converters',
+        'markitdown.converters._pdf_converter',
+        'pdfplumber',
+        'pdfminer',
+        'pdfminer.high_level',
+        'pdfminer.layout',
+        'pdfminer.pdfpage',
+        'magika',
+        'markdownify',
+        'bs4',
+        'defusedxml',
+        'charset_normalizer',
+    ] + fitz_hiddenimports + pymupdf_hiddenimports + pymupdf4llm_hiddenimports + markitdown_hiddenimports + magika_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
