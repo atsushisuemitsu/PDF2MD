@@ -1533,6 +1533,122 @@ class AdvancedPDFConverter:
 
         return figure_regions, table_regions
 
+    def _postprocess_preserve_image_layout(
+        self,
+        md_text: str,
+        figure_regions: Dict[int, List['PageFigureRegion']],
+        table_regions: Dict[int, List['PageTableRegion']],
+        page_text_positions: Optional[Dict[int, List[Dict]]] = None,
+    ) -> str:
+        """生成済み Markdown に図版/表組を Y 座標順でマージする。
+
+        page_text_positions が供給されている場合(座標ありモード)は Y 座標の
+        マージソートで挿入する。供給されていない場合(座標なしモード)は各
+        ページ末尾に図版セクションを追加し、表はスキップする(重複回避)。
+        """
+        if not figure_regions and not table_regions:
+            return md_text
+
+        # ページ区切りで分割。先頭に <!-- Page N --> が入る既存の区切り規則に従う。
+        page_marker_re = re.compile(r'^<!-- Page (\d+) -->\s*$', re.MULTILINE)
+        matches = list(page_marker_re.finditer(md_text))
+
+        if not matches:
+            # ページマーカーが無い場合は末尾に全ページ分まとめて追加
+            tail_lines = []
+            for page_num in sorted(set(list(figure_regions.keys()) + list(table_regions.keys()))):
+                tail_lines.append(f"\n<!-- Page {page_num + 1} figures (preserve-image-layout) -->\n")
+                for fig in figure_regions.get(page_num, []):
+                    tail_lines.append(f"\n![Figure p{page_num + 1}]({fig.image_path})\n")
+            return md_text + "\n".join(tail_lines)
+
+        # 各ページのスライス (start, end, page_num) を作成
+        page_slices: List[Tuple[int, int, int]] = []
+        for i, m in enumerate(matches):
+            page_num = int(m.group(1)) - 1  # 0-origin
+            start = m.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(md_text)
+            page_slices.append((start, end, page_num))
+
+        # 後ろから処理(文字列置換のインデックスずれ防止)
+        new_md = md_text
+        for start, end, page_num in reversed(page_slices):
+            figs = figure_regions.get(page_num, [])
+            tbls = table_regions.get(page_num, [])
+            if not figs and not tbls:
+                continue
+
+            page_slice = new_md[start:end]
+
+            if page_text_positions and page_num in page_text_positions and page_text_positions[page_num]:
+                # 座標ありモード: Y 順にマージ挿入
+                page_slice = self._insert_regions_by_y(
+                    page_slice, figs, tbls, page_text_positions[page_num]
+                )
+            else:
+                # 座標なしモード: ページ末尾に図版のみ集約(表は既存 MD に任せる)
+                if figs:
+                    tail = "\n\n## Figures\n"
+                    for i, fig in enumerate(figs, 1):
+                        tail += f"\n![Figure {i}]({fig.image_path})\n"
+                    page_slice = page_slice.rstrip() + tail + "\n"
+
+            new_md = new_md[:start] + page_slice + new_md[end:]
+
+        return new_md
+
+    def _insert_regions_by_y(
+        self,
+        page_slice: str,
+        figures: List['PageFigureRegion'],
+        tables: List['PageTableRegion'],
+        text_positions: List[Dict],
+    ) -> str:
+        """座標ありモードの Y 順マージ挿入ヘルパ。
+
+        text_positions は [{'y': float, 'line_offset': int}, ...] の形式。
+        line_offset は page_slice 内の行オフセット(行番号)。
+        各 region について、y < region.y を満たす最大 y のエントリの行の直後に
+        region を挿入する。
+        """
+        # regions を Y 順にソート
+        regions: List[Tuple[float, str, object]] = []
+        for fig in figures:
+            regions.append((fig.y, 'figure', fig))
+        for tbl in tables:
+            regions.append((tbl.y, 'table', tbl))
+        regions.sort(key=lambda r: r[0])
+
+        lines = page_slice.split('\n')
+        # text_positions を y でソート
+        sorted_positions = sorted(text_positions, key=lambda p: p.get('y', 0))
+
+        # 各 region について挿入先の行インデックスを決定
+        insertions: List[Tuple[int, str]] = []  # (line_index_after, markdown_block)
+        for region_y, kind, obj in regions:
+            target_line = 0
+            for pos in sorted_positions:
+                if pos.get('y', 0) < region_y:
+                    target_line = pos.get('line_offset', 0)
+                else:
+                    break
+            if kind == 'figure':
+                block = f"\n![Figure]({obj.image_path})\n"
+            else:  # table
+                if obj.markdown_table:
+                    block = f"\n{obj.markdown_table}\n"
+                else:
+                    block = f"\n![Table]({obj.fallback_image_path})\n"
+            insertions.append((target_line, block))
+
+        # 後ろから挿入してインデックスずれを防ぐ
+        insertions.sort(key=lambda x: x[0], reverse=True)
+        for line_idx, block in insertions:
+            insert_at = min(line_idx + 1, len(lines))
+            lines.insert(insert_at, block)
+
+        return '\n'.join(lines)
+
     def _convert_with_page_ocr(self, doc, output_path: str, base_name: str,
                                 images_dir: str, extract_images: bool,
                                 enable_claude: bool = True) -> Tuple[bool, str]:
