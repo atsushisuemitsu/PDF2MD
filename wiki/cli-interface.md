@@ -17,7 +17,7 @@ pdf2md.py [inputs...] [options]
   inputs              PDFファイルまたはフォルダのパス（省略時はGUI起動）
 
 オプション:
-  --layout MODE       レイアウトモード: auto|precise|page_image|legacy (default: auto)
+  --layout MODE       レイアウトモード: auto|precise|page_image|legacy|markitdown (default: auto)
   --dpi N             画像レンダリングDPI (default: 150)
   -o, --output DIR    出力先フォルダ
   --ocr               OCRを有効にする (default: True)

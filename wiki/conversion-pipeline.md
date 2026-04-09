@@ -18,6 +18,12 @@ convert_file(pdf_path, layout_mode, ...)
   │    各ページをPNG画像としてレンダリング、<img>タグで出力
   │    → 終了
   │
+  ├─ layout_mode == "markitdown" (v4.2)
+  │    → _convert_with_markitdown()
+  │    MarkItDown(Microsoft製)でテキスト/表変換
+  │    + PyMuPDFで画像補完抽出 + Claude API解析
+  │    → 終了
+  │
   ├─ layout_mode == "legacy"
   │    → _convert_with_pymupdf4llm() のみ
   │    pymupdf4llm利用不可ならフォールスルー
@@ -25,7 +31,10 @@ convert_file(pdf_path, layout_mode, ...)
   ├─ _check_font_encoding_issue() ← 最初の3ページをサンプリング
   │    │
   │    ├─ [問題あり + OCR利用可] → _convert_with_page_ocr()
-  │    │    200 DPIでページ画像化 → EasyOCR → レイアウト再構築
+  │    │    300 DPIでページ画像化
+  │    │    ├─ ndlocr_cli利用可 → レイアウト抽出 + 領域切り出し
+  │    │    │   → 図版/表組/組織図をClaude APIで分類・構造化変換（v4.3）
+  │    │    └─ それ以外 → EasyOCR/pytesseract → レイアウト再構築
   │    │
   │    └─ [問題なし、auto/legacy]
   │         → _convert_with_pymupdf4llm()

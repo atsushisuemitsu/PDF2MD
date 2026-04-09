@@ -27,15 +27,41 @@ try:
 except Exception:
     pass
 
-# pymupdfのpydバイナリを明示的に収集（collect_allで漏れる場合がある）
+# pymupdf/fitzのバイナリを明示的に収集（collect_allで漏れる場合がある）
+for pkg_name in ['pymupdf', 'fitz']:
+    try:
+        pkg_spec = importlib.util.find_spec(pkg_name)
+        if pkg_spec and pkg_spec.submodule_search_locations:
+            pkg_dir = pkg_spec.submodule_search_locations[0]
+            for fname in os.listdir(pkg_dir):
+                fpath = os.path.join(pkg_dir, fname)
+                if fname.endswith(('.pyd', '.dll', '.so')):
+                    pymupdf_binaries.append((fpath, pkg_name))
+                elif fname.endswith('.py') and fname != '__init__.py':
+                    pymupdf_datas.append((fpath, pkg_name))
+        elif pkg_spec and pkg_spec.origin:
+            # 単一ファイルモジュールの場合
+            origin = pkg_spec.origin
+            if origin.endswith(('.pyd', '.dll', '.so')):
+                pymupdf_binaries.append((origin, '.'))
+    except Exception:
+        pass
+
+# pymupdf内のmupdf-develディレクトリも収集
 try:
     pymupdf_spec = importlib.util.find_spec('pymupdf')
     if pymupdf_spec and pymupdf_spec.submodule_search_locations:
         pymupdf_dir = pymupdf_spec.submodule_search_locations[0]
-        for fname in os.listdir(pymupdf_dir):
-            fpath = os.path.join(pymupdf_dir, fname)
-            if fname.endswith('.pyd') or fname.endswith('.dll'):
-                pymupdf_binaries.append((fpath, 'pymupdf'))
+        mupdf_devel = os.path.join(pymupdf_dir, 'mupdf-devel')
+        if os.path.isdir(mupdf_devel):
+            for root, dirs, files in os.walk(mupdf_devel):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    rel_dir = os.path.join('pymupdf', os.path.relpath(root, pymupdf_dir))
+                    if fname.endswith(('.dll', '.so', '.pyd')):
+                        pymupdf_binaries.append((fpath, rel_dir))
+                    else:
+                        pymupdf_datas.append((fpath, rel_dir))
 except Exception:
     pass
 
@@ -96,7 +122,19 @@ a = Analysis(
     datas=fitz_datas + pymupdf_datas + pymupdf4llm_datas + easyocr_datas + anthropic_datas + markitdown_datas + pdfplumber_datas + pdfminer_datas + magika_datas,
     hiddenimports=[
         'fitz',
+        'fitz.table',
+        'fitz.utils',
         'pymupdf',
+        'pymupdf.extra',
+        'pymupdf.mupdf',
+        'pymupdf.pymupdf',
+        'pymupdf.table',
+        'pymupdf.utils',
+        'pymupdf._apply_pages',
+        'pymupdf._build',
+        'pymupdf._extra',
+        'pymupdf._mupdf',
+        'pymupdf._wxcolors',
         'pymupdf4llm',
         'PIL',
         'PIL.Image',

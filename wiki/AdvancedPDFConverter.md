@@ -26,7 +26,8 @@ AdvancedPDFConverter(enable_ocr=True, ocr_languages=['ja', 'en'])
 - `self.caption_detector` = [[CaptionDetector]]
 - `self.layout_analyzer` = [[LayoutAnalyzer]]
 - `self.claude_analyzer` = [[ClaudeDiagramAnalyzer]] （利用可能時のみ）
-- `self.ocr_reader` = EasyOCR Reader（利用可能時のみ、GPU=False）
+- `self.ocr_reader` = EasyOCR Reader（フォールバック時のみ、GPU=False）
+- `self.ndlocr_inferrer` = ndlocr_cli `OcrInferrer`（[[ocr-system|ndlocr_cli]] 利用可能時のみ、CPU、stages 2-3）
 
 ## 主要メソッド
 
@@ -38,6 +39,7 @@ AdvancedPDFConverter(enable_ocr=True, ocr_languages=['ja', 'en'])
 | `_convert_with_pymupdf4llm()` | pymupdf4llm変換 |
 | `_convert_with_page_ocr()` | OCRベース変換 |
 | `_convert_as_page_images()` | ページ画像モード |
+| `_convert_with_markitdown()` | MarkItDown変換（v4.2） |
 
 ### 画像抽出
 
@@ -56,6 +58,16 @@ AdvancedPDFConverter(enable_ocr=True, ocr_languages=['ja', 'en'])
 | `_generate_markdown_obsidian()` | [[obsidian-layout|Obsidian互換]] HTML/CSS出力 |
 | `_format_multicolumn_page()` | 段組みページのHTMLレンダリング |
 | `_format_single_column_page()` | 単カラムページ（画像フロート検出あり） |
+
+### OCR（v4.3）
+
+| メソッド | 用途 |
+|---------|------|
+| `_init_ndlocr()` | ndlocr_cli `OcrInferrer` を1回だけ初期化（モデル再利用） |
+| `_ocr_page_with_ndlocr()` | ページ画像をndlocr_cliに渡し、テキストブロックと非テキスト領域（図版・表組等）を返す |
+| `_crop_region_image()` | ndlocr_cli検出領域をページ画像から切り出し |
+| `_classify_and_convert_region()` | 切り出した領域をClaude APIで分類し、PlantUML/WaveDrom/Markdown表に変換 |
+| `_perform_ocr()` | 画像単位のOCR実行（ndlocr_cli → EasyOCR → pytesseract の順） |
 
 ### ユーティリティ
 
