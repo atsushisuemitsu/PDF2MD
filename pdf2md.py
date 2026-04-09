@@ -196,6 +196,29 @@ class TableBlock:
 
 
 @dataclass
+class PageFigureRegion:
+    """preserve-image-layout: ndlocr_cli で検出した図版領域"""
+    page_num: int              # 0-origin
+    y: float                   # PDF 座標 (top)
+    y_end: float
+    x: float
+    x_end: float
+    image_path: str            # 保存済み画像の相対パス
+
+
+@dataclass
+class PageTableRegion:
+    """preserve-image-layout: ndlocr_cli で検出した表組領域"""
+    page_num: int
+    y: float
+    y_end: float
+    x: float
+    x_end: float
+    markdown_table: Optional[str]       # Claude API 変換結果 (成功時)
+    fallback_image_path: Optional[str]  # Claude API 不可時の画像パス
+
+
+@dataclass
 class ListItem:
     """リストアイテム"""
     text: str
