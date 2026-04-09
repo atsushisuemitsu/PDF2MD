@@ -1637,8 +1637,11 @@ class AdvancedPDFConverter:
             else:  # table
                 if obj.markdown_table:
                     block = f"\n{obj.markdown_table}\n"
-                else:
+                elif obj.fallback_image_path:
                     block = f"\n![Table]({obj.fallback_image_path})\n"
+                else:
+                    # Defensive: should not happen in normal flow
+                    continue
             insertions.append((target_line, block))
 
         # 後ろから挿入してインデックスずれを防ぐ
