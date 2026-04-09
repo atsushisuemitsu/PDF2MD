@@ -1401,6 +1401,146 @@ class AdvancedPDFConverter:
                 return True
         return False
 
+    def _extract_layout_regions_via_ndlocr(
+        self, doc, images_dir: str, base_name: str
+    ) -> Tuple[Dict[int, List['PageFigureRegion']], Dict[int, List['PageTableRegion']]]:
+        """ndlocr_cli でページから図版/表組領域を検出し、切り抜いて保存する。
+
+        図版は PNG として保存し PageFigureRegion を返す。
+        表組は Claude API で Markdown 表に変換し、失敗時は画像としてフォールバック保存する。
+
+        Returns:
+            (figure_regions, table_regions) それぞれ {page_num: [region, ...]} 形式
+        """
+        figure_regions: Dict[int, List[PageFigureRegion]] = {}
+        table_regions: Dict[int, List[PageTableRegion]] = {}
+
+        if not self.ndlocr_inferrer:
+            print("[preserve-layout] ndlocr_cli not available, skipping")
+            return figure_regions, table_regions
+
+        total_pages = len(doc)
+
+        for page_num in range(total_pages):
+            print(f"[preserve-layout] Processing page {page_num + 1}/{total_pages}")
+            page = doc[page_num]
+            page_width = page.rect.width
+            page_height = page.rect.height
+
+            try:
+                pix = page.get_pixmap(dpi=300)
+                page_image_bytes = pix.tobytes("png")
+            except Exception as e:
+                print(f"[preserve-layout] Page {page_num + 1}: rendering failed: {e}")
+                continue
+
+            try:
+                _img = Image.open(io.BytesIO(page_image_bytes))
+                img_width = _img.width
+                img_height = _img.height
+            except Exception as e:
+                print(f"[preserve-layout] Page {page_num + 1}: image decode failed: {e}")
+                continue
+
+            if img_width == 0 or img_height == 0:
+                print(f"[preserve-layout] Page {page_num + 1}: zero image dimensions, skipping")
+                continue
+
+            scale_x = page_width / img_width
+            scale_y = page_height / img_height
+
+            try:
+                _, region_blocks = self._ocr_page_with_ndlocr(page_image_bytes, page_num)
+            except Exception as e:
+                print(f"[preserve-layout] Page {page_num + 1}: ndlocr inference failed: {e}")
+                continue
+
+            page_figures: List[PageFigureRegion] = []
+            page_tables: List[PageTableRegion] = []
+            fig_index = 0
+            tbl_index = 0
+
+            for region in region_blocks:
+                r_type = region.get('type', '')
+                r_w = region.get('width', 0)
+                r_h = region.get('height', 0)
+                if r_w < 50 or r_h < 50:
+                    continue
+
+                cropped_bytes = self._crop_region_image(
+                    page_image_bytes, region, img_width, img_height
+                )
+                if not cropped_bytes:
+                    print(f"[preserve-layout] Page {page_num + 1}: crop failed for {r_type}")
+                    continue
+
+                pdf_y = region['y'] * scale_y
+                pdf_y_end = (region['y'] + r_h) * scale_y
+                pdf_x = region['x'] * scale_x
+                pdf_x_end = (region['x'] + r_w) * scale_x
+
+                if r_type == '図版':
+                    fig_index += 1
+                    image_filename = f"{base_name}_p{page_num + 1}_fig{fig_index}.png"
+                    image_path = os.path.join(images_dir, image_filename)
+                    try:
+                        with open(image_path, 'wb') as f:
+                            f.write(cropped_bytes)
+                    except Exception as e:
+                        print(f"[preserve-layout] Page {page_num + 1}: figure save failed: {e}")
+                        continue
+                    rel_path = f"{base_name}_images/{image_filename}"
+                    page_figures.append(PageFigureRegion(
+                        page_num=page_num,
+                        y=pdf_y, y_end=pdf_y_end,
+                        x=pdf_x, x_end=pdf_x_end,
+                        image_path=rel_path,
+                    ))
+
+                elif r_type == '表組':
+                    tbl_index += 1
+                    markdown_table: Optional[str] = None
+                    fallback_image_path: Optional[str] = None
+
+                    claude_ok = (
+                        self.claude_analyzer
+                        and not getattr(self.claude_analyzer, 'disabled', False)
+                    )
+                    if claude_ok:
+                        try:
+                            result = self.claude_analyzer.analyze_single_image(cropped_bytes)
+                            if result and result.get('type') == 'table' and result.get('content'):
+                                markdown_table = result['content']
+                        except Exception as e:
+                            print(f"[preserve-layout] Claude API table conversion failed: {e}")
+
+                    if markdown_table is None:
+                        image_filename = f"{base_name}_p{page_num + 1}_tbl{tbl_index}.png"
+                        image_path = os.path.join(images_dir, image_filename)
+                        try:
+                            with open(image_path, 'wb') as f:
+                                f.write(cropped_bytes)
+                            fallback_image_path = f"{base_name}_images/{image_filename}"
+                        except Exception as e:
+                            print(f"[preserve-layout] Page {page_num + 1}: table fallback save failed: {e}")
+                            continue
+
+                    page_tables.append(PageTableRegion(
+                        page_num=page_num,
+                        y=pdf_y, y_end=pdf_y_end,
+                        x=pdf_x, x_end=pdf_x_end,
+                        markdown_table=markdown_table,
+                        fallback_image_path=fallback_image_path,
+                    ))
+
+            if page_figures:
+                figure_regions[page_num] = page_figures
+            if page_tables:
+                table_regions[page_num] = page_tables
+            print(f"[preserve-layout] Page {page_num + 1}: extracted {len(page_figures)} figures, {len(page_tables)} tables")
+
+        return figure_regions, table_regions
+
     def _convert_with_page_ocr(self, doc, output_path: str, base_name: str,
                                 images_dir: str, extract_images: bool,
                                 enable_claude: bool = True) -> Tuple[bool, str]:
