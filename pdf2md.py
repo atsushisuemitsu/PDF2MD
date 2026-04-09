@@ -1435,9 +1435,9 @@ class AdvancedPDFConverter:
                 continue
 
             try:
-                _img = Image.open(io.BytesIO(page_image_bytes))
-                img_width = _img.width
-                img_height = _img.height
+                with Image.open(io.BytesIO(page_image_bytes)) as _img:
+                    img_width = _img.width
+                    img_height = _img.height
             except Exception as e:
                 print(f"[preserve-layout] Page {page_num + 1}: image decode failed: {e}")
                 continue
@@ -1483,12 +1483,8 @@ class AdvancedPDFConverter:
                     fig_index += 1
                     image_filename = f"{base_name}_p{page_num + 1}_fig{fig_index}.png"
                     image_path = os.path.join(images_dir, image_filename)
-                    try:
-                        with open(image_path, 'wb') as f:
-                            f.write(cropped_bytes)
-                    except Exception as e:
-                        print(f"[preserve-layout] Page {page_num + 1}: figure save failed: {e}")
-                        continue
+                    with open(image_path, 'wb') as f:
+                        f.write(cropped_bytes)
                     rel_path = f"{base_name}_images/{image_filename}"
                     page_figures.append(PageFigureRegion(
                         page_num=page_num,
@@ -1517,13 +1513,9 @@ class AdvancedPDFConverter:
                     if markdown_table is None:
                         image_filename = f"{base_name}_p{page_num + 1}_tbl{tbl_index}.png"
                         image_path = os.path.join(images_dir, image_filename)
-                        try:
-                            with open(image_path, 'wb') as f:
-                                f.write(cropped_bytes)
-                            fallback_image_path = f"{base_name}_images/{image_filename}"
-                        except Exception as e:
-                            print(f"[preserve-layout] Page {page_num + 1}: table fallback save failed: {e}")
-                            continue
+                        with open(image_path, 'wb') as f:
+                            f.write(cropped_bytes)
+                        fallback_image_path = f"{base_name}_images/{image_filename}"
 
                     page_tables.append(PageTableRegion(
                         page_num=page_num,
