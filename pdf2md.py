@@ -1606,12 +1606,9 @@ class AdvancedPDFConverter:
     ) -> str:
         """座標ありモードの Y 順マージ挿入ヘルパ。
 
-        text_positions は [{'y': float, 'line_offset': int}, ...] の形式。
-        line_offset は Y 座標でソート済みのテキストブロックリスト内での相対
-        インデックス(0-origin)。markdown 内の実際の行番号ではなく、region.y
-        より小さい最大 y を持つテキストブロック位置を示す。
-        各 region について、y < region.y を満たす最大 y のエントリを探し、
-        その line_offset の直後(相対位置)に region を挿入する。
+        text_positions は [{'y': float, 'text': str}, ...] の形式。
+        各 region について、y < region.y を満たす最大 y のテキストブロックの
+        text snippet を MD 行から検索し、見つかった行の直後に region を挿入する。
         """
         # regions を Y 順にソート
         regions: List[Tuple[float, str, object]] = []
@@ -1622,18 +1619,32 @@ class AdvancedPDFConverter:
         regions.sort(key=lambda r: r[0])
 
         lines = page_slice.split('\n')
-        # text_positions を y でソート
         sorted_positions = sorted(text_positions, key=lambda p: p.get('y', 0))
 
-        # 各 region について挿入先の行インデックスを決定
-        insertions: List[Tuple[int, str]] = []  # (line_index_after, markdown_block)
+        # 各 region について MD 内の挿入先行インデックスを決定
+        insertions: List[Tuple[int, str]] = []  # (insert_after_line_idx, markdown_block)
         for region_y, kind, obj in regions:
-            target_line = 0
+            # region.y より小さい最大 y を持つテキストブロックの snippet を取得
+            target_snippet = None
             for pos in sorted_positions:
                 if pos.get('y', 0) < region_y:
-                    target_line = pos.get('line_offset', 0)
+                    snippet = pos.get('text', '')
+                    if snippet:
+                        target_snippet = snippet
                 else:
                     break
+
+            # snippet を MD 行から検索(完全一致 or 部分一致)
+            target_line = -1
+            if target_snippet:
+                for i, line in enumerate(lines):
+                    if target_snippet in line:
+                        target_line = i  # 最後に見つかった行を採用(同じ snippet が複数あれば下の方)
+
+            # 見つからなければページ末尾相当に挿入
+            if target_line < 0:
+                target_line = len(lines) - 1
+
             if kind == 'figure':
                 block = f"\n![Figure]({obj.image_path})\n"
             else:  # table
@@ -2348,17 +2359,18 @@ class AdvancedPDFConverter:
                         continue
                     blk_page = getattr(blk, 'page_num', None)
                     blk_y = getattr(blk, 'y0', None)
+                    blk_text = getattr(blk, 'text', '') or ''
                     if blk_page is None or blk_y is None:
                         continue
+                    # text snippet を保存(後段で MD 行を検索するために使う)
+                    snippet = blk_text.strip()[:80]
                     page_text_positions.setdefault(blk_page, []).append({
                         'y': float(blk_y),
-                        'line_offset': 0,  # 後段で y 順に振り直す
+                        'text': snippet,
                     })
-                # 各ページ内で y 順に並べて相対インデックスを line_offset に割り当て
+                # 各ページ内で y 順にソート
                 for pnum, positions in page_text_positions.items():
                     positions.sort(key=lambda p: p['y'])
-                    for i, p in enumerate(positions):
-                        p['line_offset'] = i
 
                 markdown_content = self._postprocess_preserve_image_layout(
                     markdown_content, fig_regions, tbl_regions,
