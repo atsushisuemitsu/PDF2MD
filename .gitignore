@@ -41,3 +41,6 @@ LP-*.md
 
 # Build artifacts
 *.exe
+
+# Git worktrees
+.worktrees/

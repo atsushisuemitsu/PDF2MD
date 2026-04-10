@@ -7,7 +7,7 @@ tags: [class, claude-api, ai, diagram]
 
 # ClaudeDiagramAnalyzer
 
-Claude API Vision を使用して図表・フローチャートを構造化テキスト（Markdownテーブル / PlantUML）に変換するクラス。
+Claude API Vision を使用して図表・フローチャートを構造化テキスト（Markdownテーブル / PlantUML / WaveDrom）に変換するクラス。
 
 ## 位置
 
@@ -43,6 +43,27 @@ self.disabled = False
 
 - `AuthenticationError` → 自動無効化（以降全スキップ）
 - その他のエラー → ログ出力のみ、処理続行
+
+## 対応する図表タイプ (v4.2)
+
+| type値 | 出力形式 | 説明 |
+|--------|---------|------|
+| `table` | Markdown表 | 表形式データ |
+| `flowchart` | PlantUML | フローチャート |
+| `sequence_diagram` | PlantUML | シーケンス図 |
+| `state_diagram` | PlantUML | 状態遷移図 |
+| `org_chart` | PlantUML | 組織図・ツリー図 |
+| `timing_chart` | WaveDrom JSON | タイミングチャート（信号波形図） |
+| `diagram` | PlantUML | その他の構造図 |
+
+### WaveDrom出力例
+
+タイミングチャート検出時、`content` にWaveDrom JSON形式を返す:
+```json
+{ "signal": [{"name": "CLK", "wave": "p......."}, {"name": "DATA", "wave": "x.345x.."}] }
+```
+
+Markdown出力時は ` ```wavedrom ` コードブロックで囲まれる。
 
 ## 関連ページ
 

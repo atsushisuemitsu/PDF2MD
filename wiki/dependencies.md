@@ -28,6 +28,8 @@ tags: [dependencies, packages]
 |-----------|-----------|------|------|
 | easyocr | >=1.7.0 | 日英OCR | requirements.txt ではコメントアウト。64-bit Python + PyTorch 必須。手動インストール: `pip install easyocr` |
 | anthropic | >=0.40.0 | Claude API 図表解析 | `ANTHROPIC_API_KEY` 環境変数が必要 |
+| markitdown | — | Microsoft製PDF/ドキュメント変換 | markitdownモード利用不可 |
+| python-dotenv | — | .envファイルから環境変数読み込み | 手動設定が必要 |
 | tkinterdnd2 | >=0.3.0 | GUI ドラッグ&ドロップ | なくても基本機能は動作 |
 | pyinstaller | >=6.0.0 | EXEビルド | 開発時のみ |
 
