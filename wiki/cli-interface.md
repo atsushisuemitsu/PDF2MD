@@ -24,8 +24,17 @@ pdf2md.py [inputs...] [options]
   --no-ocr            OCRを無効にする
   --no-images         画像抽出を無効にする
   --no-claude         Claude API図表解析を無効にする
+  --preserve-image-layout  図版を切り抜いて元Y位置に保持、表をClaude APIでMD表化 (ndlocr_cli必須)
   --context-menu      右クリックメニューからの呼び出し用
   --silent            変換完了後のダイアログを抑制
+```
+
+## 使用例
+
+```
+  pdf2md.py document.pdf                             基本変換
+  pdf2md.py --layout precise document.pdf           精密レイアウトモード
+  pdf2md.py --preserve-image-layout doc.pdf         図版を元配置で保持、表をAIでMD化
 ```
 
 ## 動作モード

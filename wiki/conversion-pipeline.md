@@ -64,6 +64,14 @@ convert_file(pdf_path, layout_mode, ...)
        └─ Markdown生成
             ├─ use_obsidian_layout → _generate_markdown_obsidian()
             └─ else → _generate_markdown()
+
+  └─ [preserve_image_layout=True かつ ndlocr_cli 利用可能]
+       → _extract_layout_regions_via_ndlocr()
+       → _postprocess_preserve_image_layout()
+       各モードのMD生成後、書き出し前に後処理で図版/表を元Y位置に挿入。
+       座標ありモード(precise/標準パイプライン/page_ocr)では Y座標順マージ挿入、
+       座標なしモード(pymupdf4llm/legacy/markitdown)では図版のみページ末尾集約、
+       表は既存挙動のまま(重複回避)。
 ```
 
 ## 出力構造

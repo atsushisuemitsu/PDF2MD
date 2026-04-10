@@ -69,6 +69,16 @@ AdvancedPDFConverter(enable_ocr=True, ocr_languages=['ja', 'en'])
 | `_classify_and_convert_region()` | 切り出した領域をClaude APIで分類し、PlantUML/WaveDrom/Markdown表に変換 |
 | `_perform_ocr()` | 画像単位のOCR実行（ndlocr_cli → EasyOCR → pytesseract の順） |
 
+### preserve-image-layout (v4.4)
+
+| メソッド | 用途 |
+|---------|------|
+| `_extract_layout_regions_via_ndlocr()` | ndlocr_cli で図版/表組領域を検出し切り抜く。図版はPNG保存、表組はClaude APIでMarkdown表化 |
+| `_postprocess_preserve_image_layout()` | 生成済みMDに図版/表組をY座標順で挿入する後処理 |
+| `_insert_regions_by_y()` | 座標ありモードでの Y 順マージ挿入ヘルパ(text snippet ベース) |
+
+`convert_file(preserve_image_layout=True)` で有効化。ndlocr_cli 必須。未導入時はオプション自体が無効化される。
+
 ### ユーティリティ
 
 | メソッド | 用途 |

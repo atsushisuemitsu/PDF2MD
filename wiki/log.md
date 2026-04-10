@@ -1,5 +1,23 @@
 # PDF2MD Wiki Log
 
+## [2026-04-10] update | preserve-image-layout 機能を追加
+
+ndlocr_cli で検出した図版領域を切り抜いて PNG 保存し、表組は Claude API で
+Markdown 表化する新機能 `--preserve-image-layout` を追加。全 layout mode 共通
+オプションで、座標ありモード(precise/標準パイプライン/page_ocr)では Y 座標順に
+マージ挿入(text snippet ベースで MD 行を検索)、座標なしモード
+(pymupdf4llm/legacy/markitdown)では図版のみページ末尾に集約。
+
+新規メソッド: `_extract_layout_regions_via_ndlocr`, `_postprocess_preserve_image_layout`,
+`_insert_regions_by_y`
+新規データクラス: `PageFigureRegion`, `PageTableRegion`
+新規CLIオプション: `--preserve-image-layout`
+新規GUIチェックボックス: 「元配置で画像を保持」
+
+更新ページ: AdvancedPDFConverter(新メソッド追加), cli-interface(オプション追加),
+PDF2MDGUI(チェックボックス追加), conversion-pipeline(後処理フック追記),
+layout-modes(共通オプション節追加), overview(v4.4履歴追加)
+
 ## [2026-04-10] update | ndlocr_cli関連メソッドをAdvancedPDFConverter/conversion-pipelineに追記
 
 `_init_ndlocr` / `_ocr_page_with_ndlocr` / `_crop_region_image` / `_classify_and_convert_region` / `_perform_ocr`（ndlocr優先）を AdvancedPDFConverter.md のメソッド表に追加。conversion-pipeline.md の `_convert_with_page_ocr` 説明に ndlocr_cli レイアウト抽出+領域切り出しフローを追記。overview.md のバージョン履歴に v4.3 を追加。
