@@ -2272,8 +2272,13 @@ class AdvancedPDFConverter:
             for page_num in range(len(doc)):
                 page = doc[page_num]
 
-                # 表ブロック抽出（テキストより先に抽出して重複を避ける）
-                table_blocks, table_regions = self.table_extractor.extract_tables(page, page_num)
+                # preserve-image-layout 有効時は ndlocr+Claude に表を任せるため既存抽出をスキップ
+                if preserve_image_layout and self.ndlocr_inferrer:
+                    table_blocks = []
+                    table_regions = []
+                else:
+                    # 表ブロック抽出（テキストより先に抽出して重複を避ける）
+                    table_blocks, table_regions = self.table_extractor.extract_tables(page, page_num)
                 all_blocks.extend(table_blocks)
 
                 # テキストブロック抽出（表領域を除外）
@@ -2312,6 +2317,41 @@ class AdvancedPDFConverter:
                 )
             else:
                 markdown_content = self._generate_markdown(all_blocks, base_name)
+
+            # preserve-image-layout 後処理 (座標ありモード)
+            if preserve_image_layout and self.ndlocr_inferrer:
+                # 再度 doc を開く(標準パイプラインで doc.close() 済み)
+                _doc = fitz.open(pdf_path)
+                try:
+                    fig_regions, tbl_regions = self._extract_layout_regions_via_ndlocr(
+                        _doc, images_dir, base_name
+                    )
+                finally:
+                    _doc.close()
+
+                # all_blocks から TextBlock のみ抽出して page_text_positions を構築
+                page_text_positions: Dict[int, List[Dict]] = {}
+                for blk in all_blocks:
+                    if type(blk).__name__ != 'TextBlock':
+                        continue
+                    blk_page = getattr(blk, 'page_num', None)
+                    blk_y = getattr(blk, 'y0', None)
+                    if blk_page is None or blk_y is None:
+                        continue
+                    page_text_positions.setdefault(blk_page, []).append({
+                        'y': float(blk_y),
+                        'line_offset': 0,  # 後段で y 順に振り直す
+                    })
+                # 各ページ内で y 順に並べて相対インデックスを line_offset に割り当て
+                for pnum, positions in page_text_positions.items():
+                    positions.sort(key=lambda p: p['y'])
+                    for i, p in enumerate(positions):
+                        p['line_offset'] = i
+
+                markdown_content = self._postprocess_preserve_image_layout(
+                    markdown_content, fig_regions, tbl_regions,
+                    page_text_positions=page_text_positions,
+                )
 
             # 保存
             with open(output_path, 'w', encoding='utf-8') as f:
