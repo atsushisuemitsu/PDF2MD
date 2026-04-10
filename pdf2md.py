@@ -1656,13 +1656,20 @@ class AdvancedPDFConverter:
 
     def _convert_with_page_ocr(self, doc, output_path: str, base_name: str,
                                 images_dir: str, extract_images: bool,
-                                enable_claude: bool = True) -> Tuple[bool, str]:
+                                enable_claude: bool = True,
+                                preserve_image_layout: bool = False) -> Tuple[bool, str]:
         """ページ全体をOCRで変換（フォント問題があるPDF用）- レイアウト保持版
 
         ndlocr_cli利用可能時はレイアウト抽出+OCRで領域検出を行い、
         図版・表組・組織図等を切り出してClaude APIで構造化変換する。
         フォールバック時はEasyOCR/pytesseractを使用。
         """
+        # preserve-image-layout: ndlocr_cli が利用可能な場合 _convert_with_page_ocr は
+        # 既に領域ベースで図版/表組を処理済みのため、ここでは追加の後処理は行わない。
+        # ndlocr_cli 未利用時は警告を出す。
+        if preserve_image_layout and not self.ndlocr_inferrer:
+            print("[preserve-layout] ndlocr_cli not available; _convert_with_page_ocr "
+                  "cannot apply preserve-image-layout enhancements")
         md_lines = []
         total_pages = len(doc)
         image_count = 0
@@ -2239,7 +2246,10 @@ class AdvancedPDFConverter:
                 # フォント問題がある場合はOCRベースの変換
                 if self.enable_ocr and self.ocr_reader:
                     print("[INFO] Font encoding issues detected, using OCR-based conversion...")
-                    result = self._convert_with_page_ocr(doc, output_path, base_name, images_dir, extract_images, enable_claude)
+                    result = self._convert_with_page_ocr(
+                        doc, output_path, base_name, images_dir, extract_images,
+                        enable_claude, preserve_image_layout=preserve_image_layout
+                    )
                     doc.close()
                     return result
                 else:
