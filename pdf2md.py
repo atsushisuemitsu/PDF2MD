@@ -3615,6 +3615,13 @@ class PDF2MDGUI:
         if not CLAUDE_API_AVAILABLE:
             claude_cb.configure(state="disabled")
 
+        self.preserve_image_layout_var = tk.BooleanVar(value=False)
+        preserve_cb = ttk.Checkbutton(option_frame, text="元配置で画像を保持",
+                                     variable=self.preserve_image_layout_var)
+        preserve_cb.pack(side="left", padx=5)
+        if not NDLOCR_AVAILABLE:
+            preserve_cb.configure(state="disabled")
+
         # レイアウトモード選択フレーム
         layout_frame = ttk.LabelFrame(main_frame, text="レイアウトモード", padding="5")
         layout_frame.grid(row=4, column=0, sticky="ew", pady=5)
@@ -3750,6 +3757,7 @@ class PDF2MDGUI:
         extract_images = self.extract_images_var.get()
         layout_mode = self.layout_mode_var.get()
         enable_claude = self.enable_claude_var.get()
+        preserve_image_layout = self.preserve_image_layout_var.get()
 
         for i, filepath in enumerate(self.file_list):
             # UI更新
@@ -3772,7 +3780,8 @@ class PDF2MDGUI:
             # 変換実行
             success, message = self.converter.convert_file(
                 filepath, out_path, extract_images=extract_images,
-                layout_mode=layout_mode, enable_claude=enable_claude
+                layout_mode=layout_mode, enable_claude=enable_claude,
+                preserve_image_layout=preserve_image_layout,
             )
 
             if success:
