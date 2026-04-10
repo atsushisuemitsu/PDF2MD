@@ -2127,7 +2127,8 @@ class AdvancedPDFConverter:
                      extract_images: bool = True,
                      layout_mode: str = "auto",
                      dpi: int = 150,
-                     enable_claude: bool = True) -> Tuple[bool, str]:
+                     enable_claude: bool = True,
+                     preserve_image_layout: bool = False) -> Tuple[bool, str]:
         """
         PDFファイルをMarkdownに変換
 
@@ -2138,6 +2139,8 @@ class AdvancedPDFConverter:
             layout_mode: レイアウトモード (auto/precise/page_image/legacy)
             dpi: 画像レンダリングDPI
             enable_claude: Claude APIによる図表解析を有効にするか
+            preserve_image_layout: 図版を切り抜いて元Y位置に挿入し表をClaude APIで
+                                  Markdown表化する (ndlocr_cli 必須)
 
         Returns:
             (成功フラグ, メッセージまたはエラー内容)
@@ -2164,24 +2167,64 @@ class AdvancedPDFConverter:
             if extract_images and not os.path.exists(images_dir):
                 os.makedirs(images_dir)
 
+            # preserve-image-layout 後処理ヘルパー (座標なしモード用)
+            def _apply_preserve_image_layout_to_file(md_output_path: str):
+                """座標なしモード用: 既存の書き出し済み .md を読み、後処理して書き戻す"""
+                if not preserve_image_layout:
+                    return
+                if not self.ndlocr_inferrer:
+                    print("[preserve-layout] ndlocr_cli not available, skipping")
+                    return
+                try:
+                    _doc = fitz.open(pdf_path)
+                except Exception as e:
+                    print(f"[preserve-layout] cannot reopen doc: {e}")
+                    return
+                try:
+                    fig_regions, tbl_regions = self._extract_layout_regions_via_ndlocr(
+                        _doc, images_dir, base_name
+                    )
+                finally:
+                    _doc.close()
+                try:
+                    with open(md_output_path, 'r', encoding='utf-8') as f:
+                        current_md = f.read()
+                    new_md = self._postprocess_preserve_image_layout(
+                        current_md, fig_regions, tbl_regions,
+                        page_text_positions=None,
+                    )
+                    with open(md_output_path, 'w', encoding='utf-8') as f:
+                        f.write(new_md)
+                    print(f"[preserve-layout] post-processed {md_output_path}")
+                except Exception as e:
+                    print(f"[preserve-layout] post-process failed: {e}")
+
             # page_imageモード: 各ページをPNG画像として出力
             if layout_mode == "page_image":
-                return self._convert_as_page_images(
+                result = self._convert_as_page_images(
                     pdf_path, output_path, base_name, images_dir, dpi
                 )
+                # page_image モードは既にページ全体が画像のため preserve-image-layout は NOP
+                return result
 
             # markitdownモード: MarkItDown（Microsoft製）を使用
             if layout_mode == "markitdown":
-                return self._convert_with_markitdown(
+                result = self._convert_with_markitdown(
                     pdf_path, output_path, images_dir, extract_images
                 )
+                if result[0]:
+                    _apply_preserve_image_layout_to_file(output_path)
+                return result
 
             # legacyモード: pymupdf4llmのみ使用
             if layout_mode == "legacy":
                 if PYMUPDF4LLM_AVAILABLE:
-                    return self._convert_with_pymupdf4llm(
+                    result = self._convert_with_pymupdf4llm(
                         pdf_path, output_path, images_dir, extract_images
                     )
+                    if result[0]:
+                        _apply_preserve_image_layout_to_file(output_path)
+                    return result
                 # pymupdf4llmが使えない場合はフォールスルー
 
             # PDF解析
@@ -2211,6 +2254,8 @@ class AdvancedPDFConverter:
                                 doc_for_drawings, output_path, images_dir, base_name
                             )
                         doc_for_drawings.close()
+                        # preserve-image-layout 後処理
+                        _apply_preserve_image_layout_to_file(output_path)
                         return result
                     print(f"[WARNING] PyMuPDF4LLM failed, falling back to standard conversion: {result[1]}")
                     # doc はまだ開いている
