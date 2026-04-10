@@ -1607,9 +1607,11 @@ class AdvancedPDFConverter:
         """座標ありモードの Y 順マージ挿入ヘルパ。
 
         text_positions は [{'y': float, 'line_offset': int}, ...] の形式。
-        line_offset は page_slice 内の行オフセット(行番号)。
-        各 region について、y < region.y を満たす最大 y のエントリの行の直後に
-        region を挿入する。
+        line_offset は Y 座標でソート済みのテキストブロックリスト内での相対
+        インデックス(0-origin)。markdown 内の実際の行番号ではなく、region.y
+        より小さい最大 y を持つテキストブロック位置を示す。
+        各 region について、y < region.y を満たす最大 y のエントリを探し、
+        その line_offset の直後(相対位置)に region を挿入する。
         """
         # regions を Y 順にソート
         regions: List[Tuple[float, str, object]] = []
@@ -2332,7 +2334,7 @@ class AdvancedPDFConverter:
                 # all_blocks から TextBlock のみ抽出して page_text_positions を構築
                 page_text_positions: Dict[int, List[Dict]] = {}
                 for blk in all_blocks:
-                    if type(blk).__name__ != 'TextBlock':
+                    if not isinstance(blk, TextBlock):
                         continue
                     blk_page = getattr(blk, 'page_num', None)
                     blk_y = getattr(blk, 'y0', None)
