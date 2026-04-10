@@ -3812,6 +3812,7 @@ def main():
   pdf2md.py --ocr document.pdf       OCR有効で変換
   pdf2md.py --no-images document.pdf 画像抽出なしで変換
   pdf2md.py ./pdf_folder/            フォルダ内のPDFを一括変換
+  pdf2md.py --preserve-image-layout doc.pdf   図版を元配置で保持、表をAIでMD化
 """
     )
     parser.add_argument("inputs", nargs="*", help="PDFファイルまたはフォルダのパス")
@@ -3828,6 +3829,8 @@ def main():
                        help="画像抽出を無効にする")
     parser.add_argument("--no-claude", action="store_true",
                        help="Claude APIによる図表解析を無効にする")
+    parser.add_argument("--preserve-image-layout", action="store_true",
+                       help="画像・図形を切り抜いて元配置で保持、表をClaude APIでMD表化 (ndlocr_cli必須)")
     parser.add_argument("--context-menu", action="store_true",
                        help="右クリックメニューからの呼び出し用")
     parser.add_argument("--silent", action="store_true",
@@ -3874,6 +3877,7 @@ def main():
                 layout_mode=args.layout,
                 dpi=args.dpi,
                 enable_claude=enable_claude,
+                preserve_image_layout=args.preserve_image_layout,
             )
             if success:
                 print(f"  -> {result}")
@@ -3896,6 +3900,7 @@ def main():
                     layout_mode=args.layout,
                     dpi=args.dpi,
                     enable_claude=enable_claude,
+                    preserve_image_layout=args.preserve_image_layout,
                 )
                 status = "OK" if success else f"Error: {result}"
                 print(f"    {status}")
