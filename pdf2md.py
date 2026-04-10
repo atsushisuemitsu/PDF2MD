@@ -1610,13 +1610,13 @@ class AdvancedPDFConverter:
         各 region について、y < region.y を満たす最大 y のテキストブロックの
         text snippet を MD 行から検索し、見つかった行の直後に region を挿入する。
         """
-        # regions を Y 順にソート
+        # regions を Y 逆順にソート（DESC）
         regions: List[Tuple[float, str, object]] = []
         for fig in figures:
             regions.append((fig.y, 'figure', fig))
         for tbl in tables:
             regions.append((tbl.y, 'table', tbl))
-        regions.sort(key=lambda r: r[0])
+        regions.sort(key=lambda r: r[0], reverse=True)
 
         lines = page_slice.split('\n')
         sorted_positions = sorted(text_positions, key=lambda p: p.get('y', 0))
