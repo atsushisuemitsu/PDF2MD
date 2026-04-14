@@ -6,51 +6,48 @@ tags: [layout, modes, configuration]
 
 # Layout Modes
 
-v4.0で導入されたレイアウトモード切替。`convert_file()` の `layout_mode` パラメータ、GUIのラジオボタン、CLI の `--layout` オプションで選択。
+`convert_file()` の `layout_mode`、GUI のラジオボタン、CLI の `--layout` で切り替える変換モード一覧。
 
-## モード一覧
+## auto
 
-### auto（デフォルト）
+標準モード。まずフォント問題を検出し、必要ならページ OCR にフォールバックする。問題がなければ `pymupdf4llm` を試し、失敗時は精密レイアウト経路に戻る。
 
-1. [[font-encoding-detection|フォント問題検出]] → 問題あればOCR変換
-2. pymupdf4llm で変換を試行
-3. 成功すれば [[vector-drawing-supplement|ベクター描画補完]] を実行
-4. 失敗すれば精密レイアウト（precise相当）にフォールバック
+## precise
 
-最もインテリジェントなパス。ほとんどのPDFに対応。
+自前の解析パイプラインを強制使用する。`LayoutAnalyzer` で段組みを検出し、`obsidian-layout` ベースの HTML/CSS でページ配置を再現する。
 
-### precise
+## page_image
 
-標準パイプラインを強制使用。[[LayoutAnalyzer]] による段組み検出、[[obsidian-layout|Obsidian互換HTML/CSS]] 出力を行う。
+各ページを PNG 化して `<img>` で出力する。内容保持を最優先し、テキスト再構成は行わない。
 
-pymupdf4llm をスキップし、全ての解析を自前で実行するため:
-- 段組み(2/3段)をCSSで再現
-- 画像とテキストのフロート配置
-- ヘッダー/フッター分離
+## legacy
 
-### page_image
+`pymupdf4llm` のみを使う従来モード。ベクター描画補完や精密レイアウト再構築は行わない。
 
-各ページをPNG画像としてレンダリングし、`<img>` タグで出力。テキスト抽出は行わない。
+## markitdown
 
-DPIは `--dpi` オプション（デフォルト150）で制御。レイアウトが複雑すぎるPDFに有効。
+MarkItDown を起点にしつつ、PDF2MD 側の OCR / 表抽出 / 画像切り出しでページを再構築する。
 
-### legacy
+- 文字: ページ全体 OCR から `TextBlock` を生成
+- 表: `AdvancedTableExtractor` で Markdown 表に変換
+- 図・フロー・画像: 既存の画像抽出で位置を維持
+- 出力: `obsidian-layout` ベースの HTML/CSS
 
-pymupdf4llm のみ使用。ベクター描画補完なし。v3.2以前の動作と同等。pymupdf4llm が利用不可の場合は標準パイプラインにフォールスルー。
+`OPENAI_API_KEY` が設定されている場合は MarkItDown OCR プラグインも自動で有効化する。モデルは `MARKITDOWN_LLM_MODEL`、未設定時は `gpt-4o`。
 
-## 選択ガイド
+## 選び方
 
-| ユースケース | 推奨モード |
-|-------------|-----------|
-| 一般的なPDF | auto |
-| 段組みPDFを正確に再現 | precise |
-| レイアウトが崩れるPDF | page_image |
-| pymupdf4llm変換のみで十分 | legacy |
-| フォント化けするPDF | auto（自動OCR） |
+| 用途 | 推奨モード |
+| --- | --- |
+| 普通の PDF | `auto` |
+| 段組みや回り込みを保ちたい | `precise` |
+| 見た目そのままを優先 | `page_image` |
+| 従来互換 | `legacy` |
+| OCR + 表 + 画像配置をまとめて使う | `markitdown` |
 
-## 関連ページ
+## 関連
 
-- [[conversion-pipeline]] — 各モードがどこで分岐するか
-- [[LayoutAnalyzer]] — precise/autoで使われる段組み検出
-- [[obsidian-layout]] — precise/autoのHTML/CSS出力
-- [[cli-interface]] — `--layout` オプション
+- [[conversion-pipeline]]
+- [[LayoutAnalyzer]]
+- [[obsidian-layout]]
+- [[cli-interface]]

@@ -101,10 +101,34 @@ except ImportError:
     pass
 
 # MarkItDown（Microsoft製PDF/ドキュメント変換）
+_LOCAL_MARKITDOWN_ROOT = Path(r"C:\prog\MarkItDown\markitdown")
+if _LOCAL_MARKITDOWN_ROOT.exists():
+    for _src_dir in (
+        _LOCAL_MARKITDOWN_ROOT / "packages" / "markitdown" / "src",
+        _LOCAL_MARKITDOWN_ROOT / "packages" / "markitdown-ocr" / "src",
+    ):
+        _src_str = str(_src_dir)
+        if _src_dir.exists() and _src_str not in sys.path:
+            sys.path.insert(0, _src_str)
+
 MARKITDOWN_AVAILABLE = False
 try:
     from markitdown import MarkItDown as _MarkItDown
     MARKITDOWN_AVAILABLE = True
+except ImportError:
+    pass
+
+OPENAI_CLIENT_AVAILABLE = False
+try:
+    from openai import OpenAI as _OpenAI
+    OPENAI_CLIENT_AVAILABLE = True
+except ImportError:
+    pass
+
+MARKITDOWN_OCR_PLUGIN_AVAILABLE = False
+try:
+    from markitdown_ocr import register_converters as _markitdown_ocr_register_converters
+    MARKITDOWN_OCR_PLUGIN_AVAILABLE = True
 except ImportError:
     pass
 
@@ -1436,6 +1460,30 @@ class AdvancedPDFConverter:
         except Exception as e:
             return False, f"PyMuPDF4LLM conversion failed: {e}"
 
+    def _create_markitdown_engine(self):
+        """MarkItDown OCR設定を環境変数から構築"""
+        kwargs = {}
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+
+        if api_key and OPENAI_CLIENT_AVAILABLE:
+            kwargs["llm_client"] = _OpenAI(api_key=api_key)
+            kwargs["llm_model"] = os.environ.get("MARKITDOWN_LLM_MODEL", "gpt-4o")
+
+        engine = _MarkItDown(**kwargs)
+
+        if kwargs and MARKITDOWN_OCR_PLUGIN_AVAILABLE:
+            try:
+                _markitdown_ocr_register_converters(engine, **kwargs)
+                print(f"[INFO] MarkItDown OCR plugin enabled ({kwargs['llm_model']})")
+            except Exception as e:
+                print(f"[WARNING] Failed to enable MarkItDown OCR plugin: {e}")
+        elif api_key and not OPENAI_CLIENT_AVAILABLE:
+            print("[WARNING] OPENAI_API_KEY is set, but the openai package is not installed.")
+        elif api_key and not MARKITDOWN_OCR_PLUGIN_AVAILABLE:
+            print("[WARNING] OPENAI_API_KEY is set, but markitdown_ocr could not be imported.")
+
+        return engine
+
     def _convert_with_markitdown(self, pdf_path: str, output_path: str,
                                   images_dir: str, extract_images: bool) -> Tuple[bool, str]:
         """MarkItDown（Microsoft製）を使用した変換"""
@@ -1445,7 +1493,7 @@ class AdvancedPDFConverter:
         try:
             print("[INFO] Converting with MarkItDown...")
 
-            md_engine = _MarkItDown()
+            md_engine = self._create_markitdown_engine()
             result = md_engine.convert(pdf_path)
             md_content = result.markdown
 
@@ -1555,6 +1603,235 @@ class AdvancedPDFConverter:
             traceback.print_exc()
             return False, f"MarkItDown conversion failed: {e}"
 
+    def _convert_with_markitdown_layout(self, pdf_path: str, output_path: str,
+                                        images_dir: str, extract_images: bool) -> Tuple[bool, str]:
+        """MarkItDown 起点で OCR/表/画像を配置維持で再構築"""
+        if not MARKITDOWN_AVAILABLE:
+            return False, "markitdown is not available. Install it or place the local source tree at C:\\prog\\MarkItDown\\markitdown"
+        if not PYMUPDF_AVAILABLE:
+            return False, "PyMuPDF is required for MarkItDown layout mode"
+
+        try:
+            print("[INFO] Converting with MarkItDown layout pipeline...")
+
+            md_engine = self._create_markitdown_engine()
+            result = md_engine.convert(pdf_path)
+            md_content = getattr(result, "markdown", "") or ""
+            if not md_content.strip():
+                print("[WARNING] MarkItDown returned empty content. Continuing with OCR/layout reconstruction.")
+
+            doc = fitz.open(pdf_path)
+            base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+            if not os.path.exists(images_dir):
+                os.makedirs(images_dir)
+
+            all_blocks = []
+            page_layouts = {}
+
+            for page_num in range(len(doc)):
+                print(f"[MarkItDown] Processing page {page_num + 1}/{len(doc)}...")
+                page = doc[page_num]
+
+                table_blocks, table_regions = self.table_extractor.extract_tables(page, page_num)
+
+                image_blocks = []
+                if extract_images:
+                    image_blocks = self._extract_image_blocks(
+                        page, page_num, images_dir, base_name, table_regions, enable_claude=False
+                    )
+
+                exclusion_regions = list(table_regions)
+                for ib in image_blocks:
+                    exclusion_regions.append((ib.x0, ib.y0, ib.x1, ib.y1))
+
+                text_blocks = self._extract_ocr_text_blocks(page, page_num, exclusion_regions)
+                if not text_blocks:
+                    text_blocks = self._extract_text_blocks(page, page_num, table_regions)
+                    text_blocks = [
+                        block for block in text_blocks
+                        if not self._bbox_overlaps_regions(
+                            (block.x0, block.y0, block.x1, block.y1),
+                            exclusion_regions,
+                            threshold=0.2
+                        )
+                    ]
+
+                page_layouts[page_num] = self.layout_analyzer.analyze_page_layout(page, text_blocks)
+
+                all_blocks.extend(table_blocks)
+                all_blocks.extend(text_blocks)
+                all_blocks.extend(image_blocks)
+
+            doc.close()
+
+            all_blocks = self._remove_text_in_drawing_images(all_blocks)
+            all_blocks = self._associate_captions(all_blocks)
+            all_blocks = self._sort_blocks_with_columns(all_blocks)
+
+            markdown_content = self._generate_markdown_obsidian(all_blocks, base_name, page_layouts)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(markdown_content)
+
+            return True, output_path
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return False, f"MarkItDown layout conversion failed: {e}"
+
+    def _bbox_overlaps_regions(self, bbox: Tuple[float, float, float, float],
+                               regions: List[Tuple],
+                               threshold: float = 0.3) -> bool:
+        if not regions:
+            return False
+
+        x0, y0, x1, y1 = bbox
+        bbox_area = max((x1 - x0) * (y1 - y0), 1)
+
+        for rx0, ry0, rx1, ry1 in regions:
+            overlap_x = max(0, min(x1, rx1) - max(x0, rx0))
+            overlap_y = max(0, min(y1, ry1) - max(y0, ry0))
+            overlap_area = overlap_x * overlap_y
+            if overlap_area / bbox_area >= threshold:
+                return True
+
+        return False
+
+    def _extract_ocr_text_blocks(self, page, page_num: int,
+                                 exclusion_regions: List[Tuple] = None) -> List[TextBlock]:
+        if not (self.enable_ocr and OCR_ENGINE == "easyocr" and self.ocr_reader and PYMUPDF_AVAILABLE):
+            return []
+
+        import numpy as np
+
+        exclusion_regions = exclusion_regions or []
+        page_width = page.rect.width
+        page_height = page.rect.height
+
+        pix = page.get_pixmap(dpi=300)
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+
+        scale_x = page_width / img.width
+        scale_y = page_height / img.height
+
+        max_size = 3500
+        resize_ratio = 1.0
+        if max(img.size) > max_size:
+            resize_ratio = max_size / max(img.size)
+            new_size = (int(img.width * resize_ratio), int(img.height * resize_ratio))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+
+        results = self.ocr_reader.readtext(np.array(img))
+        raw_items = []
+
+        for bbox, text, confidence in results:
+            text = text.strip()
+            if not text or confidence < 0.3:
+                continue
+
+            ocr_x0 = min(p[0] for p in bbox) / resize_ratio
+            ocr_y0 = min(p[1] for p in bbox) / resize_ratio
+            ocr_x1 = max(p[0] for p in bbox) / resize_ratio
+            ocr_y1 = max(p[1] for p in bbox) / resize_ratio
+
+            pdf_bbox = (
+                ocr_x0 * scale_x,
+                ocr_y0 * scale_y,
+                ocr_x1 * scale_x,
+                ocr_y1 * scale_y,
+            )
+            if self._bbox_overlaps_regions(pdf_bbox, exclusion_regions, threshold=0.25):
+                continue
+
+            raw_items.append({
+                "text": text,
+                "x0": pdf_bbox[0],
+                "y0": pdf_bbox[1],
+                "x1": pdf_bbox[2],
+                "y1": pdf_bbox[3],
+                "height": pdf_bbox[3] - pdf_bbox[1],
+            })
+
+        if not raw_items:
+            return []
+
+        raw_items.sort(key=lambda item: (item["y0"], item["x0"]))
+        token_heights = sorted(item["height"] for item in raw_items if item["height"] > 3)
+        median_height = token_heights[len(token_heights) // 2] if token_heights else 12
+        line_threshold = max(6, median_height * 0.7)
+
+        line_items = []
+        current = None
+
+        for item in raw_items:
+            if current is None or abs(item["y0"] - current["y0"]) > line_threshold:
+                if current is not None:
+                    line_items.append(current)
+                current = {
+                    "text_parts": [item["text"]],
+                    "x0": item["x0"],
+                    "y0": item["y0"],
+                    "x1": item["x1"],
+                    "y1": item["y1"],
+                    "height_values": [item["height"]],
+                }
+                continue
+
+            gap = item["x0"] - current["x1"]
+            if gap > median_height * 0.25:
+                current["text_parts"].append(item["text"])
+            else:
+                current["text_parts"][-1] += item["text"]
+
+            current["x0"] = min(current["x0"], item["x0"])
+            current["y0"] = min(current["y0"], item["y0"])
+            current["x1"] = max(current["x1"], item["x1"])
+            current["y1"] = max(current["y1"], item["y1"])
+            current["height_values"].append(item["height"])
+
+        if current is not None:
+            line_items.append(current)
+
+        line_heights = []
+        for item in line_items:
+            item["text"] = " ".join(part for part in item["text_parts"] if part).strip()
+            item["height"] = max(item["height_values"]) if item["height_values"] else median_height
+            if item["text"] and item["height"] > 3:
+                line_heights.append(item["height"])
+
+        line_heights.sort()
+        median_line_height = line_heights[len(line_heights) // 2] if line_heights else median_height
+
+        blocks = []
+        for item in line_items:
+            if not item.get("text"):
+                continue
+
+            block_type = self._detect_block_type(item["text"], item["height"], False)
+            if block_type == "text":
+                is_heading = item["height"] >= median_line_height * 1.45 and len(item["text"]) <= 80
+                if is_heading:
+                    block_type = "heading2" if item["height"] >= median_line_height * 1.9 else "heading3"
+
+            blocks.append(TextBlock(
+                text=item["text"],
+                x0=item["x0"],
+                y0=item["y0"],
+                x1=item["x1"],
+                y1=item["y1"],
+                page_num=page_num,
+                font_size=item["height"],
+                is_bold=False,
+                block_type=block_type,
+                indent_level=self._estimate_indent_level(item["x0"], page.rect.width),
+                font_name="ocr"
+            ))
+
+        return blocks
+
     def _render_page_image(self, page, page_num: int, images_dir: str,
                            base_name: str, dpi: int = 150) -> str:
         """ページ全体を高解像度PNGとしてレンダリング"""
@@ -1613,7 +1890,7 @@ class AdvancedPDFConverter:
 
             # markitdownモード: MarkItDown（Microsoft製）を使用
             if layout_mode == "markitdown":
-                return self._convert_with_markitdown(
+                return self._convert_with_markitdown_layout(
                     pdf_path, output_path, images_dir, extract_images
                 )
 

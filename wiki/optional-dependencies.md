@@ -6,56 +6,44 @@ tags: [architecture, imports, feature-flags]
 
 # Optional Dependencies Pattern
 
-PDF2MDは多数のオプショナル依存を持ち、利用可能な機能に応じて動作を切り替える。`pdf2md.py` 冒頭（line ~42-96）で try/except import パターンを使用。
+PDF2MD は try/except import と可用性フラグで機能を段階的に有効化する。
 
-## フィーチャーフラグ一覧
+## 主なフラグ
 
-| フラグ | ライブラリ | 用途 | 不在時の動作 |
-|--------|-----------|------|-------------|
-| `PYMUPDF_AVAILABLE` | PyMuPDF (fitz) | PDF解析全般 | アプリ起動不可 |
-| `PYMUPDF4LLM_AVAILABLE` | pymupdf4llm | レイアウト認識変換 | 標準パイプラインのみ |
-| `LAYOUT_AVAILABLE` | pymupdf.layout | ML レイアウト検出 | pymupdf4llm内OCR無効 |
-| `OCR_ENGINE` | easyocr / pytesseract | 図内テキスト認識 | OCR機能無効 |
-| `CLAUDE_API_AVAILABLE` | anthropic + API key | 図表AI解析 | AI解析スキップ |
-| `DND_AVAILABLE` | tkinterdnd2 | D&D対応 | ボタン操作のみ |
-| `PILLOW_AVAILABLE` | Pillow | 画像処理 | 画像関連機能制限 |
+| フラグ | 依存 | 用途 |
+| --- | --- | --- |
+| `PYMUPDF_AVAILABLE` | PyMuPDF | PDF 読み込み |
+| `PYMUPDF4LLM_AVAILABLE` | pymupdf4llm | レイアウト変換 |
+| `LAYOUT_AVAILABLE` | pymupdf.layout | pymupdf4llm 補助 |
+| `OCR_ENGINE` | easyocr / pytesseract | OCR |
+| `CLAUDE_API_AVAILABLE` | anthropic + key | Claude 図表解析 |
+| `MARKITDOWN_AVAILABLE` | markitdown | MarkItDown 変換 |
+| `OPENAI_CLIENT_AVAILABLE` | openai | OpenAI クライアント生成 |
+| `MARKITDOWN_OCR_PLUGIN_AVAILABLE` | markitdown_ocr | MarkItDown OCR プラグイン登録 |
+| `DND_AVAILABLE` | tkinterdnd2 | GUI ドラッグ&ドロップ |
 
-## OCRエンジンの優先順位
+## Claude
 
-```python
-OCR_ENGINE = None
-try:
-    import easyocr        # 優先
-    OCR_ENGINE = "easyocr"
-except ImportError:
-    try:
-        import pytesseract  # フォールバック
-        OCR_ENGINE = "pytesseract"
-    except ImportError:
-        pass  # OCR無効
-```
+`anthropic` の import 成功に加えて `ANTHROPIC_API_KEY` が必要。未設定時は GUI 側で無効表示になる。
 
-## Claude API の条件
+## MarkItDown OCR
 
-`anthropic` パッケージのインポート成功 **かつ** `ANTHROPIC_API_KEY` 環境変数が設定されている場合のみ有効。さらに [[ClaudeDiagramAnalyzer]] は初期化時にテスト呼び出しでAPIキーの有効性を検証し、無効なら `self.disabled = True` で自動無効化する。
+`layout=markitdown` 実行時、次の条件がそろうと OpenAI OCR を自動有効化する。
 
-## GUI での表示
+- `OPENAI_API_KEY` が設定済み
+- `openai` パッケージが利用可能
+- `markitdown_ocr` が import 可能
 
-[[PDF2MDGUI]] はステータスバーに各機能の有効/無効を表示:
-```
-PyMuPDF: ✓ | OCR: ✓ easyocr | Claude: ✗
-```
+モデルは `MARKITDOWN_LLM_MODEL` を使い、未設定時は `gpt-4o`。
 
-OCRやClaude APIが無効な場合、対応するチェックボックスは `disabled` 状態になる。
+## 方針
 
-## 設計意図
+- 依存がなくてもアプリは起動する
+- GUI では使えない機能を明示する
+- 利用可能な経路へ自動フォールバックする
 
-- 最小構成（PyMuPDFのみ）でも基本変換が動作する
-- 追加パッケージをインストールするほど機能が拡張される
-- インポート失敗時にクラッシュせず、警告メッセージのみ出力
+## 関連
 
-## 関連ページ
-
-- [[dependencies]] — 各パッケージの詳細
-- [[ClaudeDiagramAnalyzer]] — Claude API統合
-- [[ocr-system]] — OCRエンジン詳細
+- [[dependencies]]
+- [[ClaudeDiagramAnalyzer]]
+- [[ocr-system]]
