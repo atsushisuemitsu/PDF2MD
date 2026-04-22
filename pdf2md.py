@@ -1934,6 +1934,57 @@ class AdvancedPDFConverter:
 
         return md_content.rstrip() + "\n".join(section_lines)
 
+    def _convert_office_file(self, input_path: str, output_path: str,
+                              images_dir: str, extract_images: bool) -> Tuple[bool, str]:
+        """
+        Office ファイル (doc/docx/xls/xlsx/xlsm/pptx) を MarkItDown で変換する。
+
+        Args:
+            input_path: 入力 Office ファイルパス
+            output_path: 出力 Markdown パス
+            images_dir: 画像出力ディレクトリ
+            extract_images: 画像抽出を実行するか
+
+        Returns:
+            (成功フラグ, メッセージ)
+        """
+        if not MARKITDOWN_AVAILABLE:
+            return False, "MarkItDown がインストールされていません。'pip install markitdown[all]' を実行してください。"
+
+        print(f"[INFO] Converting Office file with MarkItDown: {input_path}")
+
+        try:
+            md_engine = _MarkItDown()
+            result = md_engine.convert(input_path)
+        except Exception as e:
+            hint = ""
+            if _get_file_ext(input_path) in {'.doc', '.xls'}:
+                hint = " 旧バイナリ形式の処理に失敗しました。'pip install markitdown[all]' で全 extra を追加してください。"
+            return False, f"MarkItDown conversion failed: {e}.{hint}"
+
+        md_content = result.text_content if hasattr(result, 'text_content') else getattr(result, 'markdown', '')
+        if not md_content or not md_content.strip():
+            return False, "MarkItDown returned empty content"
+
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+
+        if extract_images and _is_zip_based_office(input_path):
+            try:
+                extracted = self._extract_office_media_from_zip(input_path, images_dir, base_name)
+                md_content = self._append_embedded_images_section(md_content, extracted, base_name)
+            except Exception as e:
+                print(f"[WARN] Image extraction error (continuing with text only): {e}")
+        elif extract_images and _is_office_file(input_path):
+            print(f"[WARN] Image extraction not supported for legacy binary format: {input_path}")
+
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(md_content)
+        except Exception as e:
+            return False, f"Failed to write output: {e}"
+
+        return True, f"Converted: {output_path}"
+
     def _render_page_image(self, page, page_num: int, images_dir: str,
                            base_name: str, dpi: int = 150) -> str:
         """ページ全体を高解像度PNGとしてレンダリング"""
