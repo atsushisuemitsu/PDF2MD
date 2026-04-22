@@ -130,8 +130,16 @@ MARKITDOWN_AVAILABLE = False
 try:
     from markitdown import MarkItDown as _MarkItDown
     MARKITDOWN_AVAILABLE = True
+    # MarkItDown 0.0.2 uses BaseException subclasses (not Exception) for conversion errors.
+    # Capture them explicitly so our try/except can handle them alongside regular Exception.
+    try:
+        from markitdown import FileConversionException as _MarkItDownFileException  # type: ignore
+        from markitdown import UnsupportedFormatException as _MarkItDownFormatException  # type: ignore
+        _MARKITDOWN_ERRORS = (Exception, _MarkItDownFileException, _MarkItDownFormatException)
+    except ImportError:
+        _MARKITDOWN_ERRORS = (Exception,)
 except ImportError:
-    pass
+    _MARKITDOWN_ERRORS = (Exception,)
 
 # ドラッグ&ドロップ対応（Windows）
 try:
@@ -1759,7 +1767,7 @@ class AdvancedPDFConverter:
 
             md_engine = _MarkItDown()
             result = md_engine.convert(pdf_path)
-            md_content = result.markdown
+            md_content = result.text_content if hasattr(result, 'text_content') else getattr(result, 'markdown', '')
 
             if not md_content or not md_content.strip():
                 return False, "MarkItDown returned empty content"
@@ -1862,7 +1870,7 @@ class AdvancedPDFConverter:
 
             return True, output_path
 
-        except Exception as e:
+        except _MARKITDOWN_ERRORS as e:
             import traceback
             traceback.print_exc()
             return False, f"MarkItDown conversion failed: {e}"
@@ -1956,7 +1964,7 @@ class AdvancedPDFConverter:
         try:
             md_engine = _MarkItDown()
             result = md_engine.convert(input_path)
-        except Exception as e:
+        except _MARKITDOWN_ERRORS as e:
             hint = ""
             if _get_file_ext(input_path) in {'.doc', '.xls'}:
                 hint = " 旧バイナリ形式の処理に失敗しました。'pip install markitdown[all]' で全 extra を追加してください。"
