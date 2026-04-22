@@ -3583,21 +3583,24 @@ class PDF2MDGUI:
 def main():
     """メイン関数"""
     parser = argparse.ArgumentParser(
-        description="PDF to Markdown Converter v4.0",
+        description="PDF/Office to Markdown Converter v4.5",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 例:
-  pdf2md.py                          GUIモードで起動
-  pdf2md.py document.pdf             PDFをMarkdownに変換
-  pdf2md.py --layout precise doc.pdf 精密レイアウトモードで変換
-  pdf2md.py --layout page_image doc.pdf ページ画像モードで変換
-  pdf2md.py --layout markitdown doc.pdf MarkItDownで変換
-  pdf2md.py --ocr document.pdf       OCR有効で変換
-  pdf2md.py --no-images document.pdf 画像抽出なしで変換
-  pdf2md.py ./pdf_folder/            フォルダ内のPDFを一括変換
+  pdf2md.py                               GUIモードで起動
+  pdf2md.py document.pdf                  PDFをMarkdownに変換
+  pdf2md.py document.docx                 Word(.docx)をMarkdownに変換
+  pdf2md.py report.xlsx                   Excel(.xlsx)をMarkdownに変換
+  pdf2md.py slides.pptx                   PowerPoint(.pptx)をMarkdownに変換
+  pdf2md.py --layout precise doc.pdf      精密レイアウトモードで変換
+  pdf2md.py --layout page_image doc.pdf   ページ画像モードで変換
+  pdf2md.py --layout markitdown doc.pdf   MarkItDownで変換 (PDF)
+  pdf2md.py --ocr document.pdf            OCR有効で変換
+  pdf2md.py --no-images document.pdf      画像抽出なしで変換
+  pdf2md.py ./pdf_folder/                 フォルダ内の対応ファイルを一括変換
 """
     )
-    parser.add_argument("inputs", nargs="*", help="PDFファイルまたはフォルダのパス")
+    parser.add_argument("inputs", nargs="*", help="PDF/Office ファイルまたはフォルダのパス")
     parser.add_argument("--layout", choices=["auto", "precise", "page_image", "legacy", "markitdown"],
                        default="auto", help="レイアウトモード (default: auto)")
     parser.add_argument("--dpi", type=int, default=150,
@@ -3642,7 +3645,7 @@ def main():
     converter = AdvancedPDFConverter(enable_ocr=enable_ocr)
 
     for input_path in args.inputs:
-        if os.path.isfile(input_path) and input_path.lower().endswith('.pdf'):
+        if os.path.isfile(input_path) and _is_supported_input(input_path):
             print(f"Converting: {input_path}")
             out_path = None
             if args.output:
@@ -3664,7 +3667,11 @@ def main():
                 print(f"  Error: {result}")
         elif os.path.isdir(input_path):
             print(f"Converting folder: {input_path}")
-            for pdf_path in Path(input_path).glob('*.pdf'):
+            folder_files = []
+            for ext in SUPPORTED_INPUT_EXTS:
+                folder_files.extend(Path(input_path).glob(f'*{ext}'))
+                folder_files.extend(Path(input_path).glob(f'*{ext.upper()}'))
+            for pdf_path in sorted(set(folder_files)):
                 print(f"  Converting: {pdf_path.name}")
                 out_path = None
                 if args.output:
@@ -3683,7 +3690,7 @@ def main():
                 status = "OK" if success else f"Error: {result}"
                 print(f"    {status}")
         else:
-            print(f"  Skipping (not a PDF or folder): {input_path}")
+            print(f"  Skipping (not a supported file or folder): {input_path}")
 
 
 def _run_context_menu_mode(args):
@@ -3692,11 +3699,14 @@ def _run_context_menu_mode(args):
         return
 
     pdf_path = args.inputs[0]
-    if not os.path.isfile(pdf_path) or not pdf_path.lower().endswith('.pdf'):
+    if not os.path.isfile(pdf_path) or not _is_supported_input(pdf_path):
         if not args.silent:
             root = tk.Tk()
             root.withdraw()
-            messagebox.showerror("エラー", f"PDFファイルではありません:\n{pdf_path}")
+            messagebox.showerror(
+                "エラー",
+                f"対応していないファイル形式です:\n{pdf_path}\n\nサポート: PDF, DOC, DOCX, XLS, XLSX, XLSM, PPTX"
+            )
             root.destroy()
         return
 
