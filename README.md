@@ -88,6 +88,18 @@ python pdf2md.py report.xlsx    # Excel 変換
 python pdf2md.py slides.pptx    # PowerPoint 変換
 ```
 
+### EXE ビルド時の注意
+
+EXE 化 (`build.bat`) を行う場合、`charset_normalizer` は mypyc コンパイル版
+ではなく Pure Python 版を入れる必要があります:
+
+```bash
+pip install --force-reinstall --no-binary charset_normalizer charset_normalizer
+build.bat
+```
+
+これを行わないと EXE 内で MarkItDown がロードできず Office ファイル変換が失敗します。
+
 ## 使い方
 
 ### GUIモード
