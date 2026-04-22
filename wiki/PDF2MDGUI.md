@@ -1,55 +1,31 @@
 ---
 title: PDF2MDGUI
 type: class
-location: "pdf2md.py:2692"
+location: "pdf2md.py"
 tags: [class, gui, tkinter]
 ---
 
 # PDF2MDGUI
 
-tkinterベースのGUIアプリケーションクラス。
+`tkinter` ベースの GUI アプリ。PDF / Office ファイルの追加、出力先指定、変換オプション選択、進捗表示を担当する。
 
-## 位置
+## 主な機能
 
-`pdf2md.py` line ~2692
+- ファイル追加 / フォルダ追加 / クリア
+- `ファイルを選択して変換` のワンボタン導線
+- `Treeview` による対象ファイル一覧表示
+- `threading.Thread` を使ったバックグラウンド変換
+- `auto / precise / page_image / legacy / markitdown` のモード切替
+- `MarkItDown OCR` 用モデル入力欄
+- PyMuPDF / OCR / Claude / MarkItDown の利用可否表示
 
-## ウィンドウ構成
+## MarkItDown OCR
 
-```
-+----------------------------------------------+
-| PDF to Markdown Converter v4.0               |
-| PyMuPDF: ✓ | OCR: ✓ easyocr | Claude: ✗ | MarkItDown: ✓ |
-+----------------------------------------------+
-| [ファイル追加] [フォルダ追加] [クリア] [変換実行] |
-+----------------------------------------------+
-| 変換対象ファイル                               |
-| ┌─────────────────────────┬────────┐         |
-| │ ファイルパス              │ 状態   │         |
-| │ C:\docs\sample.pdf       │ 待機中 │         |
-| └─────────────────────────┴────────┘         |
-| (PDFファイルをドラッグ&ドロップで追加できます)    |
-+----------------------------------------------+
-| 変換オプション                                 |
-| [x] 画像を抽出  [x] OCR  [ ] Claude AI図表解析  |
-+----------------------------------------------+
-| レイアウトモード                               |
-| (●) 自動  ( ) 精密  ( ) ページ画像  ( ) レガシー  ( ) MarkItDown |
-+----------------------------------------------+
-| 出力先: ○同じフォルダ ○指定フォルダ [参照]      |
-+----------------------------------------------+
-| [================    ] 60%                    |
-| 変換中: manual.pdf                            |
-+----------------------------------------------+
-```
+`layout=markitdown` を選ぶと、`OPENAI_API_KEY` がある環境では OpenAI OCR を使った MarkItDown OCR プラグインを有効化する。
 
-## 主要機能
-
-- **ファイルリスト**: `ttk.Treeview` でパスとステータスを表示
-- **ドラッグ&ドロップ**: `tkinterdnd2` 利用可能時のみ有効
-- **バックグラウンド変換**: `threading.Thread` でGUIをブロックしない
-- **レイアウトモード選択**: v4.0で追加、ラジオボタン5択（v4.2でMarkItDown追加）
-- **機能ステータス**: PyMuPDF/OCR/Claude/MarkItDownの有効/無効を表示
-- **無効化されたオプション**: OCRやClaude APIが利用不可時はチェックボックスを `disabled`
+- モデル名: GUI 入力欄の値を使用
+- 既定値: `gpt-4o`
+- 反映先: `MARKITDOWN_LLM_MODEL`
 
 ## 対応ファイル形式 (v4.5)
 
@@ -62,12 +38,12 @@ tkinterベースのGUIアプリケーションクラス。
 - **フォルダ選択**: フォルダ内の対応ファイルすべてをリストアップ
 - **Office ファイル変換**: レイアウトモード設定に関わらず常に MarkItDown にルーティング
 
-## スレッドモデル
+## 進捗更新
 
-GUIスレッド（メインスレッド）とは別に変換ワーカースレッドを起動。進捗更新は `self.root.after()` でメインスレッドにディスパッチ。
+重い処理はワーカースレッドで実行し、GUI 更新だけを `self.root.after()` でメインスレッドへ戻している。
 
-## 関連ページ
+## 関連
 
-- [[AdvancedPDFConverter]] — `self.converter` として保持
-- [[optional-dependencies]] — 機能ステータス表示に使用
-- [[layout-modes]] — レイアウトモードラジオボタン
+- [[AdvancedPDFConverter]]
+- [[optional-dependencies]]
+- [[layout-modes]]

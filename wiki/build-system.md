@@ -6,45 +6,52 @@ tags: [build, pyinstaller, exe]
 
 # Build System
 
-PyInstallerを使用したWindows EXEビルド。
+PyInstaller を使って Windows 用 `PDF2MD.exe` を生成する。
 
-## ビルド手順
+## 基本コマンド
 
-```bash
-# build.bat を実行（venv自動検出、依存インストール含む）
+```powershell
 build.bat
-
-# または PowerShell
+# または
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-出力: `dist/PDF2MD.exe`
+標準出力先は `dist/PDF2MD.exe`。
 
-## spec ファイル (`PDF2MD.spec`)
+## 代替ビルド
 
-PyInstallerの設定ファイル。以下のパッケージのデータ/バイナリを収集:
+`build\PDF2MD` がロックされる環境では、作業ディレクトリと出力先を分けて実行する。
 
-| パッケージ | 収集方法 |
-|-----------|---------|
-| fitz (PyMuPDF) | `collect_all('fitz')` — datas, binaries, hiddenimports 全て |
-| pymupdf | `collect_all('pymupdf')` + 明示的 `.pyd`/`.dll` 収集 |
-| pymupdf4llm | `collect_all('pymupdf4llm')` |
-| easyocr | `collect_data_files('easyocr')` |
-| anthropic | `collect_data_files('anthropic')` |
+```powershell
+pyinstaller PDF2MD.spec --distpath dist_build --workpath build_build
+```
 
-### 注意点
+## spec ファイル
 
-- `console=True` — 変換進捗をコンソールに表示するため（`False`にするとコンソール非表示）
-- pymupdf の `.pyd` バイナリは `collect_all` で漏れる場合があるため、明示的にディレクトリ走査で収集
-- hiddenimports に `torch`, `torchvision` を含む（EasyOCR依存）
+`PDF2MD.spec` は次をまとめて収集する。
 
-## build.bat の動作
+- PyMuPDF / pymupdf
+- pymupdf4llm
+- MarkItDown
+- pdfplumber / pdfminer
+- magika
+- EasyOCR / torch 系 hidden import
+- anthropic
 
-1. venv があれば自動で activate
-2. `pip install -r requirements.txt -q` で依存インストール確認
-3. `pyinstaller --clean PDF2MD.spec` でビルド
+## 配布物
 
-## 関連ページ
+配布フォルダに含める最小構成:
 
-- [[dependencies]] — ビルドに含まれるパッケージ
-- [[optional-dependencies]] — 各パッケージの任意性
+- `dist/PDF2MD.exe`
+- `README.md`
+- `.env.sample`
+- `install_context_menu.bat`
+- `install_context_menu.ps1`
+- `uninstall_context_menu.bat`
+- `uninstall_context_menu.ps1`
+- `INSTALL.txt`
+
+## 関連
+
+- [[dependencies]]
+- [[optional-dependencies]]

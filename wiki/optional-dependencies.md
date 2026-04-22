@@ -6,62 +6,53 @@ tags: [architecture, imports, feature-flags]
 
 # Optional Dependencies Pattern
 
-PDF2MDは多数のオプショナル依存を持ち、利用可能な機能に応じて動作を切り替える。`pdf2md.py` 冒頭（line ~42-96）で try/except import パターンを使用。
+PDF2MD は try/except import と可用性フラグで機能を段階的に有効化する。
 
-## フィーチャーフラグ一覧
+## 主なフラグ
 
-| フラグ | ライブラリ | 用途 | 不在時の動作 |
-|--------|-----------|------|-------------|
-| `PYMUPDF_AVAILABLE` | PyMuPDF (fitz) | PDF解析全般 | アプリ起動不可 |
-| `PYMUPDF4LLM_AVAILABLE` | pymupdf4llm | レイアウト認識変換 | 標準パイプラインのみ |
-| `LAYOUT_AVAILABLE` | pymupdf.layout | ML レイアウト検出 | pymupdf4llm内OCR無効 |
-| `NDLOCR_AVAILABLE` | ndlocr_cli + cv2 | 国立国会図書館OCR（レイアウト抽出付き） | easyocr/pytesseractにフォールバック |
-| `OCR_ENGINE` | ndlocr / easyocr / pytesseract | テキスト認識エンジン名 | OCR機能無効 |
-| `CLAUDE_API_AVAILABLE` | anthropic + API key | 図表AI解析 | AI解析スキップ |
-| `DND_AVAILABLE` | tkinterdnd2 | D&D対応 | ボタン操作のみ |
-| `PILLOW_AVAILABLE` | Pillow | 画像処理 | 画像関連機能制限 |
-| `MARKITDOWN_AVAILABLE` | markitdown | Microsoft製PDF変換 | markitdownモード利用不可 |
-
-## OCRエンジンの優先順位
-
-```python
-OCR_ENGINE = None
-try:
-    import easyocr        # 優先
-    OCR_ENGINE = "easyocr"
-except ImportError:
-    try:
-        import pytesseract  # フォールバック
-        OCR_ENGINE = "pytesseract"
-    except ImportError:
-        pass  # OCR無効
-```
+| フラグ | 依存 | 用途 |
+| --- | --- | --- |
+| `PYMUPDF_AVAILABLE` | PyMuPDF | PDF 読み込み |
+| `PYMUPDF4LLM_AVAILABLE` | pymupdf4llm | レイアウト変換 |
+| `LAYOUT_AVAILABLE` | pymupdf.layout | pymupdf4llm 補助 |
+| `NDLOCR_AVAILABLE` | ndlocr_cli + cv2 | 国立国会図書館OCR（レイアウト抽出付き） |
+| `OCR_ENGINE` | ndlocr / easyocr / pytesseract | OCR エンジン名 |
+| `CLAUDE_API_AVAILABLE` | anthropic + key | Claude 図表解析 |
+| `MARKITDOWN_AVAILABLE` | markitdown | MarkItDown 変換 (PDF + Office) |
+| `OPENAI_CLIENT_AVAILABLE` | openai | OpenAI クライアント生成 |
+| `MARKITDOWN_OCR_PLUGIN_AVAILABLE` | markitdown_ocr | MarkItDown OCR プラグイン登録 |
+| `DND_AVAILABLE` | tkinterdnd2 | GUI ドラッグ&ドロップ |
 
 ## .env ファイル対応（v4.2）
 
-`python-dotenv` がインストール済みの場合、スクリプトと同ディレクトリの `.env` ファイルから環境変数を自動読み込みする。これにより `ANTHROPIC_API_KEY` などの設定を `.env` ファイルで管理可能。`.env.sample` がテンプレートとして提供されている。
+`python-dotenv` がインストール済みの場合、スクリプトと同ディレクトリの `.env` ファイルから環境変数を自動読み込みする。`.env.sample` がテンプレートとして提供されている。
 
-## Claude API の条件
+## Claude
 
-`anthropic` パッケージのインポート成功 **かつ** `ANTHROPIC_API_KEY` 環境変数が設定されている場合のみ有効。さらに [[ClaudeDiagramAnalyzer]] は初期化時にテスト呼び出しでAPIキーの有効性を検証し、無効なら `self.disabled = True` で自動無効化する。
+`anthropic` の import 成功に加えて `ANTHROPIC_API_KEY` が必要。未設定時は GUI 側で無効表示になる。
 
-## GUI での表示
+## MarkItDown OCR
 
-[[PDF2MDGUI]] はステータスバーに各機能の有効/無効を表示:
-```
-PyMuPDF: ✓ | OCR: ✓ easyocr | Claude: ✗ | MarkItDown: ✓
-```
+`layout=markitdown` 実行時、次の条件がそろうと OpenAI OCR を自動有効化する。
 
-OCRやClaude APIが無効な場合、対応するチェックボックスは `disabled` 状態になる。
+- `OPENAI_API_KEY` が設定済み
+- `openai` パッケージが利用可能
+- `markitdown_ocr` が import 可能
 
-## 設計意図
+モデルは `MARKITDOWN_LLM_MODEL` を使い、未設定時は `gpt-4o`。
 
-- 最小構成（PyMuPDFのみ）でも基本変換が動作する
-- 追加パッケージをインストールするほど機能が拡張される
-- インポート失敗時にクラッシュせず、警告メッセージのみ出力
+## Office ファイル変換 (v4.5)
 
-## 関連ページ
+`MARKITDOWN_AVAILABLE` が `True` で、入力ファイル拡張子が `.doc/.docx/.xls/.xlsx/.xlsm/.pptx` の場合、`_convert_office_file()` に自動ルーティングされる。`MARKITDOWN_AVAILABLE` が `False` の場合は Office ファイル入力時にエラーを返す (PDF 変換は既存経路で可)。
 
-- [[dependencies]] — 各パッケージの詳細
-- [[ClaudeDiagramAnalyzer]] — Claude API統合
-- [[ocr-system]] — OCRエンジン詳細
+## 方針
+
+- 依存がなくてもアプリは起動する
+- GUI では使えない機能を明示する
+- 利用可能な経路へ自動フォールバックする
+
+## 関連
+
+- [[dependencies]]
+- [[ClaudeDiagramAnalyzer]]
+- [[ocr-system]]
