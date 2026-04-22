@@ -140,6 +140,32 @@ except ImportError:
     DND_AVAILABLE = False
 
 
+# Office ファイル対応 (v4.5)
+SUPPORTED_OFFICE_EXTS = {'.doc', '.docx', '.xls', '.xlsx', '.xlsm', '.pptx'}
+SUPPORTED_INPUT_EXTS = {'.pdf'} | SUPPORTED_OFFICE_EXTS
+ZIP_BASED_OFFICE_EXTS = {'.docx', '.xlsx', '.xlsm', '.pptx'}
+
+
+def _get_file_ext(path: str) -> str:
+    """ファイル拡張子を lowercase で返す (ドット含む)"""
+    return os.path.splitext(path)[1].lower()
+
+
+def _is_office_file(path: str) -> bool:
+    """入力パスが Office ファイルかを拡張子で判定"""
+    return _get_file_ext(path) in SUPPORTED_OFFICE_EXTS
+
+
+def _is_zip_based_office(path: str) -> bool:
+    """ZIP 構造を持つ Office 形式 (docx/xlsx/xlsm/pptx) か"""
+    return _get_file_ext(path) in ZIP_BASED_OFFICE_EXTS
+
+
+def _is_supported_input(path: str) -> bool:
+    """PDF または Office のサポート済み形式か"""
+    return _get_file_ext(path) in SUPPORTED_INPUT_EXTS
+
+
 @dataclass
 class TextBlock:
     """テキストブロック（位置情報付き）"""
