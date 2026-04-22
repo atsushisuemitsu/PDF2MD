@@ -3455,11 +3455,14 @@ class PDF2MDGUI:
         files = self.root.tk.splitlist(event.data)
         for f in files:
             f = f.strip('{}')
-            if os.path.isfile(f) and f.lower().endswith('.pdf'):
+            if os.path.isfile(f) and _is_supported_input(f):
                 self._add_file_to_list(f)
             elif os.path.isdir(f):
-                for pdf in Path(f).glob('*.pdf'):
-                    self._add_file_to_list(str(pdf))
+                for ext in SUPPORTED_INPUT_EXTS:
+                    for p in Path(f).glob(f'*{ext}'):
+                        self._add_file_to_list(str(p))
+                    for p in Path(f).glob(f'*{ext.upper()}'):
+                        self._add_file_to_list(str(p))
 
     def _add_file_to_list(self, filepath: str):
         """ファイルをリストに追加"""
@@ -3470,8 +3473,13 @@ class PDF2MDGUI:
     def _add_files(self):
         """ファイル選択ダイアログ"""
         files = filedialog.askopenfilenames(
-            title="PDFファイルを選択",
-            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
+            title="ファイルを選択",
+            filetypes=[
+                ("対応ファイル", "*.pdf *.doc *.docx *.xls *.xlsx *.xlsm *.pptx"),
+                ("PDF files", "*.pdf"),
+                ("Office files", "*.doc *.docx *.xls *.xlsx *.xlsm *.pptx"),
+                ("All files", "*.*"),
+            ]
         )
         for f in files:
             self._add_file_to_list(f)
@@ -3480,8 +3488,18 @@ class PDF2MDGUI:
         """フォルダ選択ダイアログ"""
         folder = filedialog.askdirectory(title="フォルダを選択")
         if folder:
-            for pdf in Path(folder).glob('*.pdf'):
-                self._add_file_to_list(str(pdf))
+            seen = set()
+            for ext in SUPPORTED_INPUT_EXTS:
+                for p in Path(folder).glob(f'*{ext}'):
+                    sp = str(p)
+                    if sp not in seen:
+                        seen.add(sp)
+                        self._add_file_to_list(sp)
+                for p in Path(folder).glob(f'*{ext.upper()}'):
+                    sp = str(p)
+                    if sp not in seen:
+                        seen.add(sp)
+                        self._add_file_to_list(sp)
 
     def _clear_list(self):
         """リストクリア"""
