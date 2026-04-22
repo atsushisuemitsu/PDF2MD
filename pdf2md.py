@@ -2020,8 +2020,8 @@ class AdvancedPDFConverter:
             if not os.path.exists(pdf_path):
                 return False, f"ファイルが見つかりません: {pdf_path}"
 
-            if not pdf_path.lower().endswith('.pdf'):
-                return False, f"PDFファイルではありません: {pdf_path}"
+            if not _is_supported_input(pdf_path):
+                return False, f"対応していないファイル形式です: {pdf_path} (サポート: .pdf, .doc, .docx, .xls, .xlsx, .xlsm, .pptx)"
 
             # 出力パス決定
             if output_path is None:
@@ -2034,6 +2034,15 @@ class AdvancedPDFConverter:
 
             if extract_images and not os.path.exists(images_dir):
                 os.makedirs(images_dir)
+
+            # Office ファイル (doc/docx/xls/xlsx/xlsm/pptx) は MarkItDown にルーティング
+            if _is_office_file(pdf_path):
+                if layout_mode not in ('markitdown', 'auto'):
+                    print(
+                        f"[WARN] Office file detected. --layout {layout_mode} is ignored; using markitdown.",
+                        file=sys.stderr
+                    )
+                return self._convert_office_file(pdf_path, output_path, images_dir, extract_images)
 
             # page_imageモード: 各ページをPNG画像として出力
             if layout_mode == "page_image":
