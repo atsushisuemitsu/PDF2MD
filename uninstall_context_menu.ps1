@@ -20,12 +20,22 @@ if (-not (Test-Path "HKCR:\")) {
     New-PSDrive -Name HKCR -PSProvider Registry -Root HKEY_CLASSES_ROOT | Out-Null
 }
 
-$shellKey = "HKCR:\SystemFileAssociations\.pdf\shell\PDF2MD"
+$extensions = @('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.xlsm', '.pptx')
+$removed = 0
 
-if (Test-Path $shellKey) {
-    Remove-Item -Path $shellKey -Recurse -Force
-    Write-Host "[OK] Context menu removed successfully." -ForegroundColor Green
+foreach ($ext in $extensions) {
+    $shellKey = "HKCR:\SystemFileAssociations\$ext\shell\PDF2MD"
+    if (Test-Path $shellKey) {
+        Remove-Item -Path $shellKey -Recurse -Force
+        Write-Host "[OK] Removed for $ext" -ForegroundColor Green
+        $removed++
+    }
+}
+
+if ($removed -eq 0) {
+    Write-Host "[INFO] Context menu was not registered." -ForegroundColor Yellow
 }
 else {
-    Write-Host "[INFO] Context menu was not registered." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "[OK] Context menu removed ($removed extensions)." -ForegroundColor Green
 }
