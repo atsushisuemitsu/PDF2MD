@@ -51,6 +51,17 @@ tkinterベースのGUIアプリケーションクラス。
 - **機能ステータス**: PyMuPDF/OCR/Claude/MarkItDownの有効/無効を表示
 - **無効化されたオプション**: OCRやClaude APIが利用不可時はチェックボックスを `disabled`
 
+## 対応ファイル形式 (v4.5)
+
+- **ファイルダイアログの filetypes**:
+  - 対応ファイル (`*.pdf *.doc *.docx *.xls *.xlsx *.xlsm *.pptx`)
+  - PDF files
+  - Office files
+  - All files
+- **D&D**: PDF と Office ファイル (doc/docx/xls/xlsx/xlsm/pptx) を受付
+- **フォルダ選択**: フォルダ内の対応ファイルすべてをリストアップ
+- **Office ファイル変換**: レイアウトモード設定に関わらず常に MarkItDown にルーティング
+
 ## スレッドモデル
 
 GUIスレッド（メインスレッド）とは別に変換ワーカースレッドを起動。進捗更新は `self.root.after()` でメインスレッドにディスパッチ。
