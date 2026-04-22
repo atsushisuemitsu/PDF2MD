@@ -24,6 +24,7 @@ PDFファイルをMarkdown形式に変換するGUI/CLIツール
 
 import os
 import sys
+import shutil
 import re
 import io
 import base64
@@ -1865,6 +1866,50 @@ class AdvancedPDFConverter:
             import traceback
             traceback.print_exc()
             return False, f"MarkItDown conversion failed: {e}"
+
+    def _extract_office_media_from_zip(self, input_path: str, images_dir: str, base_name: str) -> list:
+        """
+        docx/xlsx/xlsm/pptx の ZIP 構造から埋め込み画像を抽出し、
+        {name}_images/ に office_img{N}{ext} として保存する。
+
+        Args:
+            input_path: 入力 Office ファイルパス
+            images_dir: 出力画像ディレクトリ
+            base_name: ファイル基本名 (拡張子なし)
+
+        Returns:
+            [(source_in_zip, dest_basename), ...] ソース名順
+        """
+        import zipfile
+
+        MEDIA_PREFIXES = ('word/media/', 'xl/media/', 'ppt/media/')
+
+        if not zipfile.is_zipfile(input_path):
+            print(f"[WARN] Not a valid ZIP file, skipping image extraction: {input_path}")
+            return []
+
+        if not os.path.exists(images_dir):
+            os.makedirs(images_dir, exist_ok=True)
+
+        extracted = []
+        with zipfile.ZipFile(input_path, 'r') as zf:
+            media_members = sorted([
+                name for name in zf.namelist()
+                if name.startswith(MEDIA_PREFIXES) and not name.endswith('/')
+            ])
+
+            for idx, member in enumerate(media_members, start=1):
+                ext = os.path.splitext(member)[1] or '.bin'
+                dest_basename = f"office_img{idx}{ext}"
+                dest_path = os.path.join(images_dir, dest_basename)
+                try:
+                    with zf.open(member) as src, open(dest_path, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+                    extracted.append((member, dest_basename))
+                except Exception as e:
+                    print(f"[WARN] Failed to extract {member}: {e}")
+
+        return extracted
 
     def _render_page_image(self, page, page_num: int, images_dir: str,
                            base_name: str, dpi: int = 150) -> str:
