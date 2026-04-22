@@ -14,10 +14,12 @@ argparse ベースのCLIと、Windows右クリックメニュー統合。
 pdf2md.py [inputs...] [options]
 
 引数:
-  inputs              PDFファイルまたはフォルダのパス（省略時はGUI起動）
+  inputs              PDF/Office ファイルまたはフォルダのパス（省略時はGUI起動）
+                      対応形式: .pdf, .doc, .docx, .xls, .xlsx, .xlsm, .pptx
 
 オプション:
   --layout MODE       レイアウトモード: auto|precise|page_image|legacy|markitdown (default: auto)
+                      (Office ファイルに対しては無視され、常に markitdown にルーティング)
   --dpi N             画像レンダリングDPI (default: 150)
   -o, --output DIR    出力先フォルダ
   --ocr               OCRを有効にする (default: True)
@@ -33,6 +35,30 @@ pdf2md.py [inputs...] [options]
 - **引数なし** → GUI起動 (`PDF2MDGUI().run()`)
 - **ファイル/フォルダ指定** → CLI変換
 - **`--context-menu`** → 右クリックメニューモード（ダイアログ表示付き）
+
+## Office ファイル変換 (v4.5)
+
+```bash
+# Word 文書
+python pdf2md.py document.docx
+python pdf2md.py legacy.doc
+
+# Excel
+python pdf2md.py report.xlsx
+python pdf2md.py macros.xlsm
+
+# PowerPoint
+python pdf2md.py slides.pptx
+
+# フォルダ内の全サポートファイル (PDF + Office) を一括変換
+python pdf2md.py ./mixed_folder/
+```
+
+- Office ファイル入力では `--layout` 指定は無視され、常に MarkItDown にルーティングされる
+- `precise` など PDF 専用モードを指定した場合は stderr に警告が出る
+- `--no-images` で埋め込み画像抽出を無効化可能
+- docx/xlsx/xlsm/pptx は ZIP 構造から埋め込み画像を `{name}_images/` に抽出
+- 旧バイナリ .doc/.xls は画像抽出非対応 (警告ログ)
 
 ## 右クリックメニュー統合
 

@@ -87,23 +87,25 @@ try:
 except Exception:
     pass
 
-# MarkItDown（Microsoft製PDF変換）
+# MarkItDown（Microsoft製PDF/Office変換）
 markitdown_datas = []
+markitdown_binaries = []
 markitdown_hiddenimports = []
 try:
-    markitdown_datas, _, markitdown_hiddenimports = collect_all('markitdown')
+    markitdown_datas, markitdown_binaries, markitdown_hiddenimports = collect_all('markitdown')
 except Exception:
     pass
 
-# pdfplumber / pdfminer（MarkItDown依存）
+# pdfplumber / pdfminer（MarkItDown依存 - PDF変換）
 pdfplumber_datas = []
 pdfminer_datas = []
+pdfminer_hiddenimports = []
 try:
     pdfplumber_datas = collect_data_files('pdfplumber')
 except Exception:
     pass
 try:
-    pdfminer_datas = collect_data_files('pdfminer')
+    pdfminer_datas, _, pdfminer_hiddenimports = collect_all('pdfminer')
 except Exception:
     pass
 
@@ -115,11 +117,29 @@ try:
 except Exception:
     pass
 
+# Office 変換用 MarkItDown 依存 (v4.5)
+# mammoth: docx, openpyxl/xlrd: xlsx/xls, pptx: pptx
+# charset_normalizer は mypyc コンパイル版でハッシュ名モジュールを含むため collect_all 必須
+office_datas = []
+office_binaries = []
+office_hiddenimports = []
+for pkg in ('mammoth', 'openpyxl', 'xlrd', 'pptx', 'puremagic', 'markdownify',
+            'bs4', 'beautifulsoup4', 'defusedxml', 'lxml', 'cobble',
+            'charset_normalizer', 'pathvalidate', 'isodate',
+            'tabulate', 'docstring_parser', 'soupsieve'):
+    try:
+        datas_, binaries_, hidden_ = collect_all(pkg)
+        office_datas.extend(datas_)
+        office_binaries.extend(binaries_)
+        office_hiddenimports.extend(hidden_)
+    except Exception:
+        pass
+
 a = Analysis(
     ['pdf2md.py'],
     pathex=[],
-    binaries=fitz_binaries + pymupdf_binaries,
-    datas=fitz_datas + pymupdf_datas + pymupdf4llm_datas + easyocr_datas + anthropic_datas + markitdown_datas + pdfplumber_datas + pdfminer_datas + magika_datas,
+    binaries=fitz_binaries + pymupdf_binaries + markitdown_binaries + office_binaries,
+    datas=fitz_datas + pymupdf_datas + pymupdf4llm_datas + easyocr_datas + anthropic_datas + markitdown_datas + pdfplumber_datas + pdfminer_datas + magika_datas + office_datas,
     hiddenimports=[
         'fitz',
         'fitz.table',
@@ -143,8 +163,7 @@ a = Analysis(
         'torchvision',
         'anthropic',
         'markitdown',
-        'markitdown.converters',
-        'markitdown.converters._pdf_converter',
+        'markitdown._markitdown',
         'pdfplumber',
         'pdfminer',
         'pdfminer.high_level',
@@ -155,7 +174,17 @@ a = Analysis(
         'bs4',
         'defusedxml',
         'charset_normalizer',
-    ] + fitz_hiddenimports + pymupdf_hiddenimports + pymupdf4llm_hiddenimports + markitdown_hiddenimports + magika_hiddenimports,
+        # Office 変換 (v4.5)
+        'mammoth',
+        'openpyxl',
+        'xlrd',
+        'pptx',
+        'puremagic',
+        'lxml',
+        'lxml.etree',
+        'cobble',
+        'tabulate',
+    ] + fitz_hiddenimports + pymupdf_hiddenimports + pymupdf4llm_hiddenimports + markitdown_hiddenimports + magika_hiddenimports + pdfminer_hiddenimports + office_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

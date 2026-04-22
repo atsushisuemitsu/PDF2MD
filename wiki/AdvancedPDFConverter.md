@@ -35,11 +35,14 @@ AdvancedPDFConverter(enable_ocr=True, ocr_languages=['ja', 'en'])
 
 | メソッド | 用途 |
 |---------|------|
-| `convert_file()` | メインエントリー、[[layout-modes]] に応じて分岐 |
+| `convert_file()` | メインエントリー、拡張子で PDF / Office を分岐、PDF は [[layout-modes]] に応じて分岐 |
 | `_convert_with_pymupdf4llm()` | pymupdf4llm変換 |
 | `_convert_with_page_ocr()` | OCRベース変換 |
 | `_convert_as_page_images()` | ページ画像モード |
-| `_convert_with_markitdown()` | MarkItDown変換（v4.2） |
+| `_convert_with_markitdown()` | MarkItDown変換（v4.2、PDF用） |
+| `_convert_office_file()` | Office ファイル (doc/docx/xls/xlsx/xlsm/pptx) 変換（v4.5） |
+| `_extract_office_media_from_zip()` | ZIP 構造 (word/media, xl/media, ppt/media) から画像抽出（v4.5） |
+| `_append_embedded_images_section()` | MD 末尾に `## Embedded Images` セクション追加（v4.5） |
 
 ### 画像抽出
 
@@ -78,6 +81,26 @@ AdvancedPDFConverter(enable_ocr=True, ocr_languages=['ja', 'en'])
 | `_associate_captions()` | キャプション紐付け |
 | `_sort_blocks_with_columns()` | カラム対応ソート |
 | `_render_page_image()` | ページ画像レンダリング |
+
+## Office ファイル変換 (v4.5)
+
+Office ファイル (doc/docx/xls/xlsx/xlsm/pptx) の変換は MarkItDown ライブラリに委譲される。
+`convert_file()` の入口で拡張子が Office 形式なら `_convert_office_file()` にディスパッチされる。
+
+### 処理フロー
+
+1. `MARKITDOWN_AVAILABLE` チェック — 未インストールなら即エラー
+2. `MarkItDown().convert()` で Markdown 変換
+3. docx/xlsx/xlsm/pptx の場合: `_extract_office_media_from_zip()` で ZIP 内の `word/media/` `xl/media/` `ppt/media/` を `{name}_images/` に `office_img{N}{ext}` として連番展開
+4. 旧バイナリ .doc/.xls は画像抽出スキップ (警告ログ)
+5. `_append_embedded_images_section()` で MD 末尾に `## Embedded Images` セクションを追加 (画像がある場合のみ)
+6. `{name}.md` に UTF-8 で出力
+
+### --layout オプションとの相互作用
+
+- Office ファイルは常に MarkItDown にルーティング
+- `--layout precise` 等の PDF 専用モードが明示指定されていた場合、stderr に警告を出してから MarkItDown を使用
+- `--layout auto` (デフォルト) または `--layout markitdown` の場合は警告なし
 
 ## 関連ページ
 

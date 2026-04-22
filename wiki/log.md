@@ -1,5 +1,24 @@
 # PDF2MD Wiki Log
 
+## [2026-04-22] feat | Office ファイル対応 (v4.5)
+
+PDF2MD の入力対象を `.pdf` のみから Microsoft Office ファイルに拡張:
+
+- 対応形式追加: `.doc`, `.docx`, `.xls`, `.xlsx`, `.xlsm`, `.pptx`
+- MarkItDown 統合により Office 変換を実装
+- docx/xlsx/xlsm/pptx の ZIP 構造から埋め込み画像を `{name}_images/office_img{N}.{ext}` として連番抽出
+- 旧バイナリ形式 (.doc/.xls) はテキストのみ (画像抽出非対応)
+- CLI / GUI 両方で Office ファイルを直接受付 (ファイルダイアログ・D&D・フォルダ選択)
+- `--layout` 指定は Office ファイルに対して無視され、MarkItDown に自動ルーティング (非互換モード指定時は警告)
+- `requirements.txt` に `markitdown[all]` を追加
+
+更新ページ: overview (v4.5 バージョン更新・履歴追加), AdvancedPDFConverter (Office 変換メソッド追加), cli-interface (Office 変換例), PDF2MDGUI (対応ファイル形式), conversion-pipeline (入口ディスパッチャ追加)
+
+EXE ビルド上の注意: `charset_normalizer` は mypyc コンパイル版 (3.4.x バイナリ) だと
+PyInstaller が `*__mypyc` というハッシュ付きサブモジュールを収集できず、EXE 内で
+MarkItDown がロードできない。Pure Python 版を入れる必要がある:
+`pip install --force-reinstall --no-binary charset_normalizer charset_normalizer`
+
 ## [2026-04-10] update | ndlocr_cli関連メソッドをAdvancedPDFConverter/conversion-pipelineに追記
 
 `_init_ndlocr` / `_ocr_page_with_ndlocr` / `_crop_region_image` / `_classify_and_convert_region` / `_perform_ocr`（ndlocr優先）を AdvancedPDFConverter.md のメソッド表に追加。conversion-pipeline.md の `_convert_with_page_ocr` 説明に ndlocr_cli レイアウト抽出+領域切り出しフローを追記。overview.md のバージョン履歴に v4.3 を追加。

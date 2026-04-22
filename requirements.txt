@@ -17,6 +17,10 @@ Pillow>=10.0.0
 # Optional: Claude API for diagram/flowchart analysis
 anthropic>=0.40.0
 
+# MarkItDown (PDF + Office documents: doc/docx/xls/xlsx/xlsm/pptx)
+# [all] extras includes legacy doc/xls support
+markitdown[all]>=0.0.2
+
 # Optional: Drag & Drop support for Windows GUI
 tkinterdnd2>=0.3.0
 

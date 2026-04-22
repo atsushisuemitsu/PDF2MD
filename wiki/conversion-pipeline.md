@@ -13,6 +13,16 @@ tags: [architecture, pipeline, core]
 ```
 convert_file(pdf_path, layout_mode, ...)
   │
+  ├─ _is_supported_input() で拡張子チェック
+  │    未対応拡張子 → エラー return
+  │
+  ├─ _is_office_file() (v4.5)
+  │    Office ファイル (doc/docx/xls/xlsx/xlsm/pptx) → _convert_office_file()
+  │    → MarkItDown で変換
+  │    → docx/xlsx/xlsm/pptx は ZIP から画像抽出
+  │    → 旧 doc/xls はテキストのみ (警告ログ)
+  │    → 終了
+  │
   ├─ layout_mode == "page_image"
   │    → _convert_as_page_images()
   │    各ページをPNG画像としてレンダリング、<img>タグで出力
@@ -73,7 +83,8 @@ convert_file(pdf_path, layout_mode, ...)
 ```
 {base_name}.md          — Markdownファイル
 {base_name}_images/     — 抽出画像ディレクトリ
-  page{N}_img{M}.png    — 個別画像
+  page{N}_img{M}.png    — PDF から抽出した個別画像
+  office_img{N}.{ext}   — Office から ZIP 抽出した画像 (v4.5)
 ```
 
 ## 関連ページ

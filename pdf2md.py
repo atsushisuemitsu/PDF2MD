@@ -24,6 +24,7 @@ PDFファイルをMarkdown形式に変換するGUI/CLIツール
 
 import os
 import sys
+import shutil
 import re
 import io
 import base64
@@ -129,8 +130,16 @@ MARKITDOWN_AVAILABLE = False
 try:
     from markitdown import MarkItDown as _MarkItDown
     MARKITDOWN_AVAILABLE = True
+    # MarkItDown 0.0.2 uses BaseException subclasses (not Exception) for conversion errors.
+    # Capture them explicitly so our try/except can handle them alongside regular Exception.
+    try:
+        from markitdown import FileConversionException as _MarkItDownFileException  # type: ignore
+        from markitdown import UnsupportedFormatException as _MarkItDownFormatException  # type: ignore
+        _MARKITDOWN_ERRORS = (Exception, _MarkItDownFileException, _MarkItDownFormatException)
+    except ImportError:
+        _MARKITDOWN_ERRORS = (Exception,)
 except ImportError:
-    pass
+    _MARKITDOWN_ERRORS = (Exception,)
 
 # ドラッグ&ドロップ対応（Windows）
 try:
@@ -138,6 +147,32 @@ try:
     DND_AVAILABLE = True
 except ImportError:
     DND_AVAILABLE = False
+
+
+# Office ファイル対応 (v4.5)
+SUPPORTED_OFFICE_EXTS = {'.doc', '.docx', '.xls', '.xlsx', '.xlsm', '.pptx'}
+SUPPORTED_INPUT_EXTS = {'.pdf'} | SUPPORTED_OFFICE_EXTS
+ZIP_BASED_OFFICE_EXTS = {'.docx', '.xlsx', '.xlsm', '.pptx'}
+
+
+def _get_file_ext(path: str) -> str:
+    """ファイル拡張子を lowercase で返す (ドット含む)"""
+    return os.path.splitext(path)[1].lower()
+
+
+def _is_office_file(path: str) -> bool:
+    """入力パスが Office ファイルかを拡張子で判定"""
+    return _get_file_ext(path) in SUPPORTED_OFFICE_EXTS
+
+
+def _is_zip_based_office(path: str) -> bool:
+    """ZIP 構造を持つ Office 形式 (docx/xlsx/xlsm/pptx) か"""
+    return _get_file_ext(path) in ZIP_BASED_OFFICE_EXTS
+
+
+def _is_supported_input(path: str) -> bool:
+    """PDF または Office のサポート済み形式か"""
+    return _get_file_ext(path) in SUPPORTED_INPUT_EXTS
 
 
 @dataclass
@@ -1732,7 +1767,7 @@ class AdvancedPDFConverter:
 
             md_engine = _MarkItDown()
             result = md_engine.convert(pdf_path)
-            md_content = result.markdown
+            md_content = result.text_content if hasattr(result, 'text_content') else getattr(result, 'markdown', '')
 
             if not md_content or not md_content.strip():
                 return False, "MarkItDown returned empty content"
@@ -1835,10 +1870,128 @@ class AdvancedPDFConverter:
 
             return True, output_path
 
-        except Exception as e:
+        except _MARKITDOWN_ERRORS as e:
             import traceback
             traceback.print_exc()
             return False, f"MarkItDown conversion failed: {e}"
+
+    def _extract_office_media_from_zip(self, input_path: str, images_dir: str, base_name: str) -> list:
+        """
+        docx/xlsx/xlsm/pptx の ZIP 構造から埋め込み画像を抽出し、
+        {name}_images/ に office_img{N}{ext} として保存する。
+
+        Args:
+            input_path: 入力 Office ファイルパス
+            images_dir: 出力画像ディレクトリ
+            base_name: ファイル基本名 (拡張子なし)
+
+        Returns:
+            [(source_in_zip, dest_basename), ...] ソース名順
+        """
+        import zipfile
+
+        MEDIA_PREFIXES = ('word/media/', 'xl/media/', 'ppt/media/')
+
+        if not zipfile.is_zipfile(input_path):
+            print(f"[WARN] Not a valid ZIP file, skipping image extraction: {input_path}")
+            return []
+
+        if not os.path.exists(images_dir):
+            os.makedirs(images_dir, exist_ok=True)
+
+        extracted = []
+        with zipfile.ZipFile(input_path, 'r') as zf:
+            media_members = sorted([
+                name for name in zf.namelist()
+                if name.startswith(MEDIA_PREFIXES) and not name.endswith('/')
+            ])
+
+            for idx, member in enumerate(media_members, start=1):
+                ext = os.path.splitext(member)[1] or '.bin'
+                dest_basename = f"office_img{idx}{ext}"
+                dest_path = os.path.join(images_dir, dest_basename)
+                try:
+                    with zf.open(member) as src, open(dest_path, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+                    extracted.append((member, dest_basename))
+                except Exception as e:
+                    print(f"[WARN] Failed to extract {member}: {e}")
+
+        return extracted
+
+    def _append_embedded_images_section(self, md_content: str, extracted: list, base_name: str) -> str:
+        """
+        Markdown 末尾に ## Embedded Images セクションを追加する。
+
+        Args:
+            md_content: MarkItDown が生成した Markdown 本体
+            extracted: [(source_in_zip, dest_basename), ...]
+            base_name: ファイル基本名 (拡張子なし、画像ディレクトリ名に使用)
+
+        Returns:
+            セクションを追加した新しい Markdown 文字列。extracted が空なら md_content そのまま。
+        """
+        if not extracted:
+            return md_content
+
+        section_lines = ["", "", "## Embedded Images", ""]
+        for _, dest_basename in extracted:
+            alt = os.path.splitext(dest_basename)[0]
+            section_lines.append(f"![{alt}](./{base_name}_images/{dest_basename})")
+        section_lines.append("")
+
+        return md_content.rstrip() + "\n".join(section_lines)
+
+    def _convert_office_file(self, input_path: str, output_path: str,
+                              images_dir: str, extract_images: bool) -> Tuple[bool, str]:
+        """
+        Office ファイル (doc/docx/xls/xlsx/xlsm/pptx) を MarkItDown で変換する。
+
+        Args:
+            input_path: 入力 Office ファイルパス
+            output_path: 出力 Markdown パス
+            images_dir: 画像出力ディレクトリ
+            extract_images: 画像抽出を実行するか
+
+        Returns:
+            (成功フラグ, メッセージ)
+        """
+        if not MARKITDOWN_AVAILABLE:
+            return False, "MarkItDown がインストールされていません。'pip install markitdown[all]' を実行してください。"
+
+        print(f"[INFO] Converting Office file with MarkItDown: {input_path}")
+
+        try:
+            md_engine = _MarkItDown()
+            result = md_engine.convert(input_path)
+        except _MARKITDOWN_ERRORS as e:
+            hint = ""
+            if _get_file_ext(input_path) in {'.doc', '.xls'}:
+                hint = " 旧バイナリ形式の処理に失敗しました。'pip install markitdown[all]' で全 extra を追加してください。"
+            return False, f"MarkItDown conversion failed: {e}.{hint}"
+
+        md_content = result.text_content if hasattr(result, 'text_content') else getattr(result, 'markdown', '')
+        if not md_content or not md_content.strip():
+            return False, "MarkItDown returned empty content"
+
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+
+        if extract_images and _is_zip_based_office(input_path):
+            try:
+                extracted = self._extract_office_media_from_zip(input_path, images_dir, base_name)
+                md_content = self._append_embedded_images_section(md_content, extracted, base_name)
+            except Exception as e:
+                print(f"[WARN] Image extraction error (continuing with text only): {e}")
+        elif extract_images and _is_office_file(input_path):
+            print(f"[WARN] Image extraction not supported for legacy binary format: {input_path}")
+
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(md_content)
+        except Exception as e:
+            return False, f"Failed to write output: {e}"
+
+        return True, f"Converted: {output_path}"
 
     def _render_page_image(self, page, page_num: int, images_dir: str,
                            base_name: str, dpi: int = 150) -> str:
@@ -1875,8 +2028,8 @@ class AdvancedPDFConverter:
             if not os.path.exists(pdf_path):
                 return False, f"ファイルが見つかりません: {pdf_path}"
 
-            if not pdf_path.lower().endswith('.pdf'):
-                return False, f"PDFファイルではありません: {pdf_path}"
+            if not _is_supported_input(pdf_path):
+                return False, f"対応していないファイル形式です: {pdf_path} (サポート: .pdf, .doc, .docx, .xls, .xlsx, .xlsm, .pptx)"
 
             # 出力パス決定
             if output_path is None:
@@ -1889,6 +2042,15 @@ class AdvancedPDFConverter:
 
             if extract_images and not os.path.exists(images_dir):
                 os.makedirs(images_dir)
+
+            # Office ファイル (doc/docx/xls/xlsx/xlsm/pptx) は MarkItDown にルーティング
+            if _is_office_file(pdf_path):
+                if layout_mode not in ('markitdown', 'auto'):
+                    print(
+                        f"[WARN] Office file detected. --layout {layout_mode} is ignored; using markitdown.",
+                        file=sys.stderr
+                    )
+                return self._convert_office_file(pdf_path, output_path, images_dir, extract_images)
 
             # page_imageモード: 各ページをPNG画像として出力
             if layout_mode == "page_image":
@@ -3301,11 +3463,14 @@ class PDF2MDGUI:
         files = self.root.tk.splitlist(event.data)
         for f in files:
             f = f.strip('{}')
-            if os.path.isfile(f) and f.lower().endswith('.pdf'):
+            if os.path.isfile(f) and _is_supported_input(f):
                 self._add_file_to_list(f)
             elif os.path.isdir(f):
-                for pdf in Path(f).glob('*.pdf'):
-                    self._add_file_to_list(str(pdf))
+                for ext in SUPPORTED_INPUT_EXTS:
+                    for p in Path(f).glob(f'*{ext}'):
+                        self._add_file_to_list(str(p))
+                    for p in Path(f).glob(f'*{ext.upper()}'):
+                        self._add_file_to_list(str(p))
 
     def _add_file_to_list(self, filepath: str):
         """ファイルをリストに追加"""
@@ -3316,8 +3481,13 @@ class PDF2MDGUI:
     def _add_files(self):
         """ファイル選択ダイアログ"""
         files = filedialog.askopenfilenames(
-            title="PDFファイルを選択",
-            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
+            title="ファイルを選択",
+            filetypes=[
+                ("対応ファイル", "*.pdf *.doc *.docx *.xls *.xlsx *.xlsm *.pptx"),
+                ("PDF files", "*.pdf"),
+                ("Office files", "*.doc *.docx *.xls *.xlsx *.xlsm *.pptx"),
+                ("All files", "*.*"),
+            ]
         )
         for f in files:
             self._add_file_to_list(f)
@@ -3326,8 +3496,18 @@ class PDF2MDGUI:
         """フォルダ選択ダイアログ"""
         folder = filedialog.askdirectory(title="フォルダを選択")
         if folder:
-            for pdf in Path(folder).glob('*.pdf'):
-                self._add_file_to_list(str(pdf))
+            seen = set()
+            for ext in SUPPORTED_INPUT_EXTS:
+                for p in Path(folder).glob(f'*{ext}'):
+                    sp = str(p)
+                    if sp not in seen:
+                        seen.add(sp)
+                        self._add_file_to_list(sp)
+                for p in Path(folder).glob(f'*{ext.upper()}'):
+                    sp = str(p)
+                    if sp not in seen:
+                        seen.add(sp)
+                        self._add_file_to_list(sp)
 
     def _clear_list(self):
         """リストクリア"""
@@ -3429,21 +3609,24 @@ class PDF2MDGUI:
 def main():
     """メイン関数"""
     parser = argparse.ArgumentParser(
-        description="PDF to Markdown Converter v4.0",
+        description="PDF/Office to Markdown Converter v4.5",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 例:
-  pdf2md.py                          GUIモードで起動
-  pdf2md.py document.pdf             PDFをMarkdownに変換
-  pdf2md.py --layout precise doc.pdf 精密レイアウトモードで変換
-  pdf2md.py --layout page_image doc.pdf ページ画像モードで変換
-  pdf2md.py --layout markitdown doc.pdf MarkItDownで変換
-  pdf2md.py --ocr document.pdf       OCR有効で変換
-  pdf2md.py --no-images document.pdf 画像抽出なしで変換
-  pdf2md.py ./pdf_folder/            フォルダ内のPDFを一括変換
+  pdf2md.py                               GUIモードで起動
+  pdf2md.py document.pdf                  PDFをMarkdownに変換
+  pdf2md.py document.docx                 Word(.docx)をMarkdownに変換
+  pdf2md.py report.xlsx                   Excel(.xlsx)をMarkdownに変換
+  pdf2md.py slides.pptx                   PowerPoint(.pptx)をMarkdownに変換
+  pdf2md.py --layout precise doc.pdf      精密レイアウトモードで変換
+  pdf2md.py --layout page_image doc.pdf   ページ画像モードで変換
+  pdf2md.py --layout markitdown doc.pdf   MarkItDownで変換 (PDF)
+  pdf2md.py --ocr document.pdf            OCR有効で変換
+  pdf2md.py --no-images document.pdf      画像抽出なしで変換
+  pdf2md.py ./pdf_folder/                 フォルダ内の対応ファイルを一括変換
 """
     )
-    parser.add_argument("inputs", nargs="*", help="PDFファイルまたはフォルダのパス")
+    parser.add_argument("inputs", nargs="*", help="PDF/Office ファイルまたはフォルダのパス")
     parser.add_argument("--layout", choices=["auto", "precise", "page_image", "legacy", "markitdown"],
                        default="auto", help="レイアウトモード (default: auto)")
     parser.add_argument("--dpi", type=int, default=150,
@@ -3488,7 +3671,7 @@ def main():
     converter = AdvancedPDFConverter(enable_ocr=enable_ocr)
 
     for input_path in args.inputs:
-        if os.path.isfile(input_path) and input_path.lower().endswith('.pdf'):
+        if os.path.isfile(input_path) and _is_supported_input(input_path):
             print(f"Converting: {input_path}")
             out_path = None
             if args.output:
@@ -3510,7 +3693,11 @@ def main():
                 print(f"  Error: {result}")
         elif os.path.isdir(input_path):
             print(f"Converting folder: {input_path}")
-            for pdf_path in Path(input_path).glob('*.pdf'):
+            folder_files = []
+            for ext in SUPPORTED_INPUT_EXTS:
+                folder_files.extend(Path(input_path).glob(f'*{ext}'))
+                folder_files.extend(Path(input_path).glob(f'*{ext.upper()}'))
+            for pdf_path in sorted(set(folder_files)):
                 print(f"  Converting: {pdf_path.name}")
                 out_path = None
                 if args.output:
@@ -3529,7 +3716,7 @@ def main():
                 status = "OK" if success else f"Error: {result}"
                 print(f"    {status}")
         else:
-            print(f"  Skipping (not a PDF or folder): {input_path}")
+            print(f"  Skipping (not a supported file or folder): {input_path}")
 
 
 def _run_context_menu_mode(args):
@@ -3538,11 +3725,14 @@ def _run_context_menu_mode(args):
         return
 
     pdf_path = args.inputs[0]
-    if not os.path.isfile(pdf_path) or not pdf_path.lower().endswith('.pdf'):
+    if not os.path.isfile(pdf_path) or not _is_supported_input(pdf_path):
         if not args.silent:
             root = tk.Tk()
             root.withdraw()
-            messagebox.showerror("エラー", f"PDFファイルではありません:\n{pdf_path}")
+            messagebox.showerror(
+                "エラー",
+                f"対応していないファイル形式です:\n{pdf_path}\n\nサポート: PDF, DOC, DOCX, XLS, XLSX, XLSM, PPTX"
+            )
             root.destroy()
         return
 

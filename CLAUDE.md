@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-PDF2MD is a Windows desktop application (single-file: `pdf2md.py`, ~3100 lines, v4.0) that converts PDF files to Markdown format. It uses PyMuPDF and PyMuPDF4LLM for PDF parsing, EasyOCR for OCR, and optionally Claude API for diagram/flowchart analysis. Supports both GUI (tkinter) and CLI (argparse) modes.
+PDF2MD is a Windows desktop application (single-file: `pdf2md.py`, ~3700 lines, v4.5) that converts PDF and Microsoft Office files (doc/docx/xls/xlsx/xlsm/pptx) to Markdown format. It uses PyMuPDF and PyMuPDF4LLM for PDF parsing, EasyOCR for OCR, MarkItDown for Office and PDF fallback conversion, and optionally Claude API for diagram/flowchart analysis. Supports both GUI (tkinter) and CLI (argparse) modes.
 
 Primary language: Python 3.13 on Windows. UI labels and comments are in Japanese.
 
@@ -16,7 +16,7 @@ pip install -r requirements.txt
 # GUI mode
 python pdf2md.py
 
-# CLI mode
+# CLI mode - PDF
 python pdf2md.py document.pdf
 python pdf2md.py --layout precise document.pdf
 python pdf2md.py --layout page_image document.pdf
@@ -27,6 +27,13 @@ python pdf2md.py --no-claude document.pdf
 python pdf2md.py --dpi 300 document.pdf
 python pdf2md.py -o ./output/ document.pdf
 python pdf2md.py ./pdf_folder/
+
+# CLI mode - Office (v4.5)
+python pdf2md.py document.docx
+python pdf2md.py legacy.doc
+python pdf2md.py report.xlsx
+python pdf2md.py macros.xlsm
+python pdf2md.py slides.pptx
 
 # Build EXE (Windows) → dist/PDF2MD.exe
 build.bat
@@ -49,7 +56,14 @@ Single-file application (`pdf2md.py`) with all classes in one module.
 ### Conversion Pipeline
 
 ```
-convert_file() (line ~1415)
+convert_file() (line ~1997)
+  │
+  ├─ _is_supported_input() — extension check (.pdf + Office formats)
+  │
+  ├─ _is_office_file() (v4.5) → _convert_office_file()
+  │    MarkItDown conversion + ZIP media extraction (docx/xlsx/xlsm/pptx)
+  │    Legacy .doc/.xls: text only (image extraction skipped with warning)
+  │    → End
   │
   ├─ page_image mode → _convert_as_page_images() (render each page as PNG)
   │
