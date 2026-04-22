@@ -31,7 +31,7 @@ if (-not (Test-Path "HKCR:\")) {
     New-PSDrive -Name HKCR -PSProvider Registry -Root HKEY_CLASSES_ROOT | Out-Null
 }
 
-$extensions = @('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.xlsm', '.pptx')
+$extensions = @('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.xlsm', '.pptx', '.csv', '.epub', '.ipynb', '.html', '.htm', '.msg', '.jpg', '.jpeg', '.png')
 
 try {
     foreach ($ext in $extensions) {
@@ -53,7 +53,8 @@ try {
     Write-Host ""
     Write-Host "Usage:"
     Write-Host "  1. Right-click a supported file in Explorer"
-    Write-Host "     (.pdf, .doc, .docx, .xls, .xlsx, .xlsm, .pptx)"
+    Write-Host "     (.pdf, .doc, .docx, .xls, .xlsx, .xlsm, .pptx,"
+    Write-Host "      .csv, .epub, .ipynb, .html, .htm, .msg, .jpg, .jpeg, .png)"
     Write-Host "  2. Select 'PDF2MD -> MD'"
     Write-Host "     (Windows 11: under 'Show more options')"
     Write-Host "  3. Output is saved next to the input file"

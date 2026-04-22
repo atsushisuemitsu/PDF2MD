@@ -20,7 +20,7 @@ if (-not (Test-Path "HKCR:\")) {
     New-PSDrive -Name HKCR -PSProvider Registry -Root HKEY_CLASSES_ROOT | Out-Null
 }
 
-$extensions = @('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.xlsm', '.pptx')
+$extensions = @('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.xlsm', '.pptx', '.csv', '.epub', '.ipynb', '.html', '.htm', '.msg', '.jpg', '.jpeg', '.png')
 $removed = 0
 
 foreach ($ext in $extensions) {

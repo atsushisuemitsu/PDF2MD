@@ -175,8 +175,12 @@ except ImportError:
 
 # Office ファイル対応 (v4.5)
 SUPPORTED_OFFICE_EXTS = {'.doc', '.docx', '.xls', '.xlsx', '.xlsm', '.pptx'}
-SUPPORTED_INPUT_EXTS = {'.pdf'} | SUPPORTED_OFFICE_EXTS
 ZIP_BASED_OFFICE_EXTS = {'.docx', '.xlsx', '.xlsm', '.pptx'}
+
+# MarkItDown のみで変換するその他形式 (v4.6)
+SUPPORTED_MARKITDOWN_EXTS = {'.csv', '.epub', '.ipynb', '.html', '.htm', '.msg', '.jpg', '.jpeg', '.png'}
+
+SUPPORTED_INPUT_EXTS = {'.pdf'} | SUPPORTED_OFFICE_EXTS | SUPPORTED_MARKITDOWN_EXTS
 
 
 def _get_file_ext(path: str) -> str:
@@ -192,6 +196,11 @@ def _is_office_file(path: str) -> bool:
 def _is_zip_based_office(path: str) -> bool:
     """ZIP 構造を持つ Office 形式 (docx/xlsx/xlsm/pptx) か"""
     return _get_file_ext(path) in ZIP_BASED_OFFICE_EXTS
+
+
+def _is_markitdown_only_file(path: str) -> bool:
+    """MarkItDown 専用形式 (csv/epub/ipynb/html/htm/msg/jpg/jpeg/png) か"""
+    return _get_file_ext(path) in SUPPORTED_MARKITDOWN_EXTS
 
 
 def _is_supported_input(path: str) -> bool:
@@ -2306,7 +2315,11 @@ class AdvancedPDFConverter:
                 return False, f"ファイルが見つかりません: {pdf_path}"
 
             if not _is_supported_input(pdf_path):
-                return False, f"対応していないファイル形式です: {pdf_path} (サポート: .pdf, .doc, .docx, .xls, .xlsx, .xlsm, .pptx)"
+                return False, (
+                    f"対応していないファイル形式です: {pdf_path} "
+                    "(サポート: .pdf, .doc, .docx, .xls, .xlsx, .xlsm, .pptx, "
+                    ".csv, .epub, .ipynb, .html, .htm, .msg, .jpg, .jpeg, .png)"
+                )
 
             # 出力パス決定
             if output_path is None:
@@ -2319,6 +2332,10 @@ class AdvancedPDFConverter:
 
             if extract_images and not os.path.exists(images_dir):
                 os.makedirs(images_dir)
+
+            # MarkItDown 専用形式 (csv/epub/ipynb/html/htm/msg/jpg/jpeg/png) をルーティング
+            if _is_markitdown_only_file(pdf_path):
+                return self._convert_office_file(pdf_path, output_path, images_dir, extract_images)
 
             # Office ファイル (doc/docx/xls/xlsx/xlsm/pptx) は MarkItDown にルーティング
             if _is_office_file(pdf_path):
@@ -3760,9 +3777,10 @@ class PDF2MDGUI:
         files = filedialog.askopenfilenames(
             title="ファイルを選択",
             filetypes=[
-                ("対応ファイル", "*.pdf *.doc *.docx *.xls *.xlsx *.xlsm *.pptx"),
+                ("対応ファイル", "*.pdf *.doc *.docx *.xls *.xlsx *.xlsm *.pptx *.csv *.epub *.ipynb *.html *.htm *.msg *.jpg *.jpeg *.png"),
                 ("PDF files", "*.pdf"),
                 ("Office files", "*.doc *.docx *.xls *.xlsx *.xlsm *.pptx"),
+                ("Other formats", "*.csv *.epub *.ipynb *.html *.htm *.msg *.jpg *.jpeg *.png"),
                 ("All files", "*.*"),
             ]
         )
