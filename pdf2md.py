@@ -1911,6 +1911,29 @@ class AdvancedPDFConverter:
 
         return extracted
 
+    def _append_embedded_images_section(self, md_content: str, extracted: list, base_name: str) -> str:
+        """
+        Markdown 末尾に ## Embedded Images セクションを追加する。
+
+        Args:
+            md_content: MarkItDown が生成した Markdown 本体
+            extracted: [(source_in_zip, dest_basename), ...]
+            base_name: ファイル基本名 (拡張子なし、画像ディレクトリ名に使用)
+
+        Returns:
+            セクションを追加した新しい Markdown 文字列。extracted が空なら md_content そのまま。
+        """
+        if not extracted:
+            return md_content
+
+        section_lines = ["", "", "## Embedded Images", ""]
+        for _, dest_basename in extracted:
+            alt = os.path.splitext(dest_basename)[0]
+            section_lines.append(f"![{alt}](./{base_name}_images/{dest_basename})")
+        section_lines.append("")
+
+        return md_content.rstrip() + "\n".join(section_lines)
+
     def _render_page_image(self, page, page_num: int, images_dir: str,
                            base_name: str, dpi: int = 150) -> str:
         """ページ全体を高解像度PNGとしてレンダリング"""
